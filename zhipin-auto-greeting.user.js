@@ -238,22 +238,26 @@
     return output;
   }
 
+  // 合并内置和自定义 Boss 活跃度选项，供下拉多选渲染使用。
   function getBossActiveFilterOptions(customOptions) {
     return BOSS_ACTIVE_BUILTIN_OPTIONS.concat(normalizeBossActiveOptions(customOptions || []));
   }
 
+  // 将用户输入或 DOM 文本归一到展示标签；内置项保持原有中文文案。
   function getBossActiveOptionLabel(value) {
     const key = normalizeBossActiveText(value);
     if (!key) return '';
     return BOSS_ACTIVE_BUILTIN_OPTIONS.find((item) => normalizeBossActiveText(item) === key) || key;
   }
 
+  // 当前配置中已选 Boss 活跃度的匹配 key，用于过滤岗位。
   function getSelectedBossActiveKeys() {
     return normalizeBossActiveOptions(config.bossActiveFilterValues)
       .map((item) => normalizeBossActiveText(item))
       .filter(Boolean);
   }
 
+  // 判断用户是否启用了 Boss 活跃度过滤。
   function hasBossActiveFilter() {
     return getSelectedBossActiveKeys().length > 0;
   }
@@ -338,6 +342,7 @@
 
   // 跨页面自动化状态：记录当前阶段、岗位游标、待发送岗位、返回列表地址和下一次运行时间。
   const RunState = {
+    // 从 localStorage 读取运行状态，异常 JSON 直接视为空状态。
     load() {
       try {
         return JSON.parse(localStorage.getItem(APP.runKey) || 'null');
@@ -345,15 +350,18 @@
         return null;
       }
     },
+    // 持久化完整/局部运行状态，并自动合并最近更新时间。
     save(nextState) {
       const previous = this.load() || {};
       const merged = Object.assign({}, previous, nextState, { updatedAt: Date.now() });
       localStorage.setItem(APP.runKey, JSON.stringify(merged));
       return merged;
     },
+    // 语义化别名：在流程中只更新少量字段时调用。
     patch(nextState) {
       return this.save(nextState);
     },
+    // 停止自动化并保留停止原因，便于刷新后不再恢复。
     stop(reason) {
       const state = this.save({
         active: false,
@@ -366,6 +374,7 @@
       });
       return state;
     },
+    // 暂停自动化但保留现场，给用户确认后可以重新启动。
     pause(reason) {
       const state = this.save({
         active: false,
@@ -376,6 +385,7 @@
       });
       return state;
     },
+    // 清掉跨页面状态，通常用于用户手动结束或重新开始前。
     clear() {
       localStorage.removeItem(APP.runKey);
     },
@@ -762,7 +772,7 @@
     }
   }
 
-  // 处理岗位详情响应：保存最新详情、合并到列表池，并异步补抓 HTML 中的公司工商信息。
+  // 处理岗位详情响应：保存最新详情并合并到列表池；HTML/工商信息由当前岗位按需补抓。
   function ingestJobDetailResponse(url, text, source) {
     if (!text) return;
 
@@ -784,9 +794,8 @@
         UI.setStatus(`已捕获岗位详情：${detail.jobName || '未知岗位'} / ${detail.salary}`, 'ok');
       }
 
-      JobRepository.enrichDetailWithHtml(detail).catch((error) => {
-        console.warn('[ZhipinAuto] 岗位 HTML 详情解析失败', error);
-      });
+      // HTML/工商信息只在当前岗位需要保存或发送前按需补抓。
+      // 连续按活跃度跳过时如果为每个详情响应都并发补抓，会把后续真正沟通岗位的补全请求排队到超时。
     } catch (error) {
       console.warn('[ZhipinAuto] 岗位详情接口解析失败', error);
     }
@@ -1087,21 +1096,39 @@
     },
 
     // 根据强 ID、签名或弱签名查找某个岗位对应的最新详情。
-    getDetailForJob(job) {
-      for (const key of getJobIdentityKeys(job)) {
+    getDetailForJob(job, options) {
+      const reliableKeys = getReliableJobIdentityKeys(job);
+      for (const key of reliableKeys) {
         const matched = runtime.jobDetailByKey.get(key);
         if (matched) return matched;
       }
 
+      // 当前岗位带有 encryptJobId/securityId/lid 时，不再退回到岗位名+公司弱匹配。
+      // 连续切换详情时，弱匹配容易命中上一张相似岗位的半成品详情。
+      if (reliableKeys.length && !(options && options.allowWeakWithReliableKey)) return null;
+
       const signature = job && (job.signature || makeSignature(job.jobName, job.company, job.salary));
       const looseSignature = job && (job.looseSignature || makeLooseSignature(job.jobName, job.company));
-      return runtime.jobDetailByKey.get(`signature:${signature}`) ||
-        runtime.jobDetailByKey.get(`loose:${looseSignature}`) ||
-        null;
+      const signatureDetail = runtime.jobDetailByKey.get(`signature:${signature}`);
+      if (signatureDetail && isWeakDetailCompatible(job, signatureDetail)) return signatureDetail;
+
+      const looseDetail = runtime.jobDetailByKey.get(`loose:${looseSignature}`);
+      if (looseDetail && isWeakDetailCompatible(job, looseDetail)) return looseDetail;
+
+      return null;
+    },
+
+    // 判断是否需要主动补拉详情接口，避免复用缺薪资/缺 rawDetail 的半成品详情。
+    shouldFetchJobDetail(job, detail, options) {
+      if (!detail) return true;
+      if (!(options && options.forceApiFetch)) return false;
+      return !detail.rawDetail || (!getReadableSalary(detail.salary) && !getDisplaySalary(job));
     },
 
     // 点击岗位卡片后等待详情接口/HTML 数据到达；超时则主动补抓接口。
-    async waitForJobDetail(job, timeout, resourceStartedAt) {
+    async waitForJobDetail(job, timeout, resourceStartedAt, options) {
+      const detailOptions = options || {};
+      const includeHtml = detailOptions.includeHtml !== false;
       const totalTimeout = Math.max(800, Number(timeout || 2200));
       const startedAt = Date.now();
       let detail = this.getDetailForJob(job);
@@ -1118,7 +1145,7 @@
 
       // BOSS 页面会缓存原始 XHR 方法，导致后续切换岗位时响应偶尔绕过拦截器。
       // 此时用岗位列表中的 securityId/lid（或刚发生的详情资源 URL）主动补取一次。
-      if (!detail) {
+      if (this.shouldFetchJobDetail(job, detail, detailOptions)) {
         detail = await this.fetchJobDetail(job, resourceStartedAt).catch((error) => {
           logDebugEvent('job_detail_active_fetch_failed', {
             job: summarizeJobForDebug(job),
@@ -1126,7 +1153,7 @@
             resourceStartedAt,
           }, 'warn');
           console.warn('[ZhipinAuto] 主动获取岗位详情失败', error);
-          return null;
+          return detail || null;
         });
       }
 
@@ -1140,7 +1167,7 @@
         } catch (_) {}
       }
 
-      if (!detail || detail.htmlCapturedAt) return detail;
+      if (!includeHtml || !detail || detail.htmlCapturedAt) return detail;
 
       if (!detail.htmlFetchPending) {
         this.enrichDetailWithHtml(detail).catch((error) => {
@@ -1165,18 +1192,19 @@
     async fetchJobDetail(job, resourceStartedAt) {
       const fetcher = nativePageFetch || (typeof pageWindow.fetch === 'function' && pageWindow.fetch.bind(pageWindow));
       if (!fetcher) return null;
-      const urls = Array.from(new Set([
-        buildJobDetailApiUrl(job),
-        findLatestJobDetailApiUrl(resourceStartedAt),
-      ].filter(Boolean)));
-      if (!urls.length) return null;
+      const directUrl = buildJobDetailApiUrl(job);
+      const latestUrl = findLatestJobDetailApiUrl(resourceStartedAt);
+      const requestTargets = [];
+      if (directUrl) requestTargets.push({ url: directUrl, direct: true });
+      if (latestUrl && latestUrl !== directUrl) requestTargets.push({ url: latestUrl, direct: false });
+      if (!requestTargets.length) return null;
 
       const expectedJobId = normalizeText(job && job.encryptJobId);
       let lastError = null;
 
-      for (const url of urls) {
+      for (const target of requestTargets) {
         try {
-          const response = await fetcher(url, {
+          const response = await fetcher(target.url, {
             credentials: 'include',
             headers: { Accept: 'application/json, text/plain, */*' },
           });
@@ -1189,18 +1217,18 @@
 
           const detail = this.normalizeJobDetail(payload, {
             source: 'active-fetch',
-            sourceUrl: url,
+            sourceUrl: target.url,
           });
           if (!detail) throw new Error('岗位详情响应为空');
           if (expectedJobId && detail.encryptJobId && detail.encryptJobId !== expectedJobId) {
             throw new Error(`岗位详情不匹配：期望 ${expectedJobId}，实际 ${detail.encryptJobId}`);
           }
+          if (!isFetchedDetailCompatibleWithJob(job, detail, { allowWeakWithReliableKey: target.direct })) {
+            throw new Error('岗位详情不匹配：响应内容不像当前岗位');
+          }
 
           this.rememberJobDetail(detail);
           this.applyDetailToPool(detail);
-          this.enrichDetailWithHtml(detail).catch((error) => {
-            console.warn('[ZhipinAuto] 岗位 HTML 详情解析失败', error);
-          });
           return detail;
         } catch (error) {
           lastError = error;
@@ -1276,12 +1304,14 @@
     // 将详情合并回列表池中的对应岗位，保证后续存储和发送模板拿到最新字段。
     applyDetailToPool(detail) {
       let matched = null;
-      const detailKeys = new Set(getJobDetailKeys(detail));
+      const detailReliableKeys = new Set(getReliableJobIdentityKeys(detail));
 
       runtime.jobPool = runtime.jobPool.map((job) => {
-        const keyMatched = getJobIdentityKeys(job).some((key) => detailKeys.has(key));
-        const signatureMatched = detail.signature && detail.signature === job.signature;
-        const looseMatched = detail.looseSignature && detail.looseSignature === job.looseSignature;
+        const jobReliableKeys = getReliableJobIdentityKeys(job);
+        const keyMatched = jobReliableKeys.some((key) => detailReliableKeys.has(key));
+        const allowCompositeFallback = !detailReliableKeys.size || !jobReliableKeys.length;
+        const signatureMatched = allowCompositeFallback && detail.signature && detail.signature === job.signature;
+        const looseMatched = allowCompositeFallback && detail.looseSignature && detail.looseSignature === job.looseSignature;
 
         if (!keyMatched && !signatureMatched && !looseMatched) return job;
 
@@ -1417,12 +1447,12 @@
         if (this.isJobPoolUsableForCards()) return true;
 
         this.resetJobListScope('');
-        return false;
       }
 
       try {
         await waitFor(() => runtime.jobPool.length > 0, timeout || 1800, '岗位接口数据');
-        return true;
+        if (this.isJobPoolUsableForCards()) return true;
+        this.resetJobListScope('');
       } catch (_) {}
 
       const fetched = await this.fetchLatestJobList().catch((error) => {
@@ -1433,7 +1463,7 @@
         console.warn('[ZhipinAuto] 主动获取岗位列表失败', error);
         return false;
       });
-      if (fetched) return true;
+      if (fetched && this.isJobPoolUsableForCards()) return true;
 
       return false;
     },
@@ -2229,6 +2259,7 @@
       });
     },
 
+    // 记录用户真实触碰过配置控件，用于区分浏览器自动填充事件。
     noteConfigFieldInteraction(event) {
       const field = this.getConfigFieldFromTarget(event && event.target);
       if (!field) return;
@@ -2236,6 +2267,7 @@
       runtime.configFormTouched = true;
     },
 
+    // 拦截浏览器自动恢复的旧表单值，避免覆盖 localStorage 中的真实配置。
     shouldIgnoreConfigFieldEvent(event) {
       const field = this.getConfigFieldFromTarget(event && event.target);
       if (!field) return false;
@@ -2254,6 +2286,7 @@
       return true;
     },
 
+    // 从任意事件目标向上查找脚本配置字段，并排除面板外元素。
     getConfigFieldFromTarget(target) {
       const root = runtime.ui && runtime.ui.root;
       if (!root || !target || !target.closest) return null;
@@ -2261,10 +2294,12 @@
       return field && root.contains(field) ? field : null;
     },
 
+    // 判断事件目标是否是问候模式/文本来源的单选项。
     isModeInput(target) {
       return Boolean(target && target.matches && target.matches('input[name="za-greeting-mode"], input[name="za-text-source"]'));
     },
 
+    // 读取配置字段的 JS 值，统一处理 checkbox 和 number。
     readConfigFieldValue(field) {
       if (!field) return '';
       if (field.type === 'checkbox') return Boolean(field.checked);
@@ -2272,6 +2307,7 @@
       return field.value;
     },
 
+    // 将配置值写回表单字段，避免各处重复处理 checkbox/空值。
     setConfigFieldValue(field, value) {
       if (!field) return;
       if (field.type === 'checkbox') {
@@ -2281,6 +2317,7 @@
       }
     },
 
+    // 自动填充事件被忽略时，把字段恢复到当前配置值。
     restoreConfigFieldValue(field) {
       const key = field && field.dataset && field.dataset.field;
       if (!CONFIG_FIELD_KEY_SET.has(key)) return;
@@ -2425,6 +2462,7 @@
       this.renderFastReplyPickerList();
     },
 
+    // 计算常用语安全索引，防止刷新后缓存数量变化造成越界。
     getSafeFastReplyIndex(replies) {
       const total = Array.isArray(replies) ? replies.length : 0;
       if (!total) return 0;
@@ -2434,6 +2472,7 @@
       return Math.min(Math.max(Math.floor(index), 0), total - 1);
     },
 
+    // 渲染常用语弹层列表，并按搜索词过滤候选项。
     renderFastReplyPickerList() {
       if (!runtime.ui || !runtime.ui.fastReplyList) return;
 
@@ -2467,10 +2506,12 @@
         : `<div class="za-fast-reply-empty">${replies.length ? '没有匹配的常用语' : '暂无常用语，请先刷新'}</div>`;
     },
 
+    // 判断常用语选择弹层是否打开。
     isFastReplyPickerOpen() {
       return Boolean(runtime.ui && runtime.ui.fastReplyBackdrop && !runtime.ui.fastReplyBackdrop.hidden);
     },
 
+    // 打开/关闭常用语选择弹层，并在关闭时清空搜索框。
     setFastReplyPickerOpen(open) {
       if (!runtime.ui || !runtime.ui.fastReplyBackdrop) return;
 
@@ -2495,6 +2536,7 @@
       }
     },
 
+    // 更新常用语搜索词并重新渲染弹层列表。
     setFastReplySearch(value) {
       if (!runtime.ui || !runtime.ui.fastReplySearch) return;
       runtime.ui.fastReplySearch.value = value || '';
@@ -2502,6 +2544,7 @@
       runtime.ui.fastReplySearch.focus();
     },
 
+    // 选择某条常用语并持久化索引。
     selectFastReply(index) {
       const replies = config.fastReplies || [];
       const nextIndex = Number(index);
@@ -2552,10 +2595,12 @@
         : '<span class="za-empty-text">暂无自定义选项</span>';
     },
 
+    // 判断 Boss 活跃度下拉是否打开。
     isBossActiveDropdownOpen() {
       return Boolean(runtime.ui && runtime.ui.bossActiveOptionMenu && !runtime.ui.bossActiveOptionMenu.hidden);
     },
 
+    // 打开/关闭 Boss 活跃度下拉，并同步 aria 状态。
     setBossActiveDropdownOpen(open) {
       if (!runtime.ui || !runtime.ui.bossActiveOptionMenu || !runtime.ui.bossActiveDropdown) return;
       const trigger = runtime.ui.bossActiveDropdown.querySelector('[data-action="toggleBossActiveDropdown"]');
@@ -2565,6 +2610,7 @@
       if (trigger) trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
     },
 
+    // 勾选或取消某个 Boss 活跃度选项，并保存到配置。
     setBossActiveOptionSelected(value, selected, keepDropdownOpen) {
       const key = normalizeBossActiveText(value);
       if (!key) return;
@@ -2583,10 +2629,12 @@
       this.setBossActiveDropdownOpen(Boolean(keepDropdownOpen));
     },
 
+    // 从已选列表中移除某个 Boss 活跃度。
     removeBossActiveSelection(value) {
       this.setBossActiveOptionSelected(value, false);
     },
 
+    // 添加自定义 Boss 活跃度选项，去重后写入配置。
     addBossActiveCustomOption() {
       if (!runtime.ui || !runtime.ui.bossActiveCustomInput) return;
       const input = runtime.ui.bossActiveCustomInput;
@@ -2615,6 +2663,7 @@
       UI.setStatus(`已添加自定义活跃度：${text}`, 'ok');
     },
 
+    // 删除自定义 Boss 活跃度，并同步清理已选过滤值。
     deleteBossActiveCustomOption(value) {
       const key = normalizeBossActiveText(value);
       if (!key || BOSS_ACTIVE_BUILTIN_KEYS.has(key)) return;
@@ -3174,6 +3223,7 @@
         job,
         Math.min(3200, getWaitTimeout() * 1000),
         detailResourceStartedAt,
+        { includeHtml: false, forceApiFetch: true },
       );
       const domDetail = extractDetailInfo();
       job = mergeJobInfo(job, apiDetail || domDetail);
@@ -3213,6 +3263,21 @@
         scrollAhead(cursorIndex + 1);
         return 'processed';
       }
+
+      const fullDetail = await JobRepository.waitForJobDetail(
+        job,
+        Math.min(8000, Math.max(4500, getWaitTimeout() * 1000)),
+        detailResourceStartedAt,
+        { includeHtml: true, forceApiFetch: true },
+      );
+      if (fullDetail) {
+        job = mergeJobInfo(job, fullDetail);
+      }
+      logDebugEvent('job_detail_completed_before_chat', {
+        cursorIndex,
+        job: summarizeJobForDebug(job),
+        fullDetail: summarizeJobForDebug(fullDetail),
+      });
 
       await Database.saveJobRecord(job, {
         status: 'clicked',
@@ -3302,7 +3367,12 @@
         }
 
         let pendingJob = revivePendingJob(state);
-        const latestDetail = await JobRepository.waitForJobDetail(pendingJob, Math.min(2500, getWaitTimeout() * 1000), 0)
+        const latestDetail = await JobRepository.waitForJobDetail(
+          pendingJob,
+          Math.min(8000, Math.max(4500, getWaitTimeout() * 1000)),
+          0,
+          { includeHtml: true, forceApiFetch: true },
+        )
           .catch(() => JobRepository.getDetailForJob(pendingJob));
         if (latestDetail) {
           pendingJob = mergeJobInfo(pendingJob, latestDetail);
@@ -3437,8 +3507,9 @@
       });
       const apiDetail = await JobRepository.waitForJobDetail(
         pendingJob,
-        Math.min(3200, getWaitTimeout() * 1000),
+        Math.min(8000, Math.max(4500, getWaitTimeout() * 1000)),
         detailResourceStartedAt,
+        { includeHtml: true, forceApiFetch: true },
       );
       const refreshedJob = mergeJobInfo(pendingJob, apiDetail || extractDetailInfo());
 
@@ -3836,8 +3907,8 @@
     });
   }
 
+  // 给侧栏配置留两个入口：严格 JSON 对象，或者更适合手填的每行 key=value。
   function parseKeyValueConfig(text, label) {
-    // 给侧栏配置留两个入口：严格 JSON 对象，或者更适合手填的每行 key=value。
     const source = String(text || '').trim();
     if (!source) return {};
 
@@ -3863,6 +3934,7 @@
     }
   }
 
+  // 校验 key=value/JSON 配置是否能解析，启动前用于提前提示用户。
   function isParsableKeyValueConfig(text) {
     try {
       parseKeyValueConfig(text, '配置');
@@ -3872,6 +3944,7 @@
     }
   }
 
+  // 判断自定义接口 responsePath 是否像合法路径，避免把大段配置误填到路径框。
   function isLikelyResponsePath(path) {
     const value = String(path || '').trim();
     if (!value) return true;
@@ -4145,11 +4218,13 @@
     };
   }
 
+  // 在指定根节点中查找活跃度元素，可按调用场景选择是否要求可见。
   function findBossActiveElement(root, selector, visibleOnly) {
     return Array.from(root ? root.querySelectorAll(selector) : [])
       .find((element) => !visibleOnly || isVisible(element));
   }
 
+  // 清洗活跃度节点文本，移除图标/隐藏节点后归一成可匹配标签。
   function cleanBossActiveElementText(element, hiddenClasses) {
     if (!element) return '';
 
@@ -5481,6 +5556,7 @@
     return target.includes(value);
   }
 
+  // 根据当前配置判断岗位 Boss 活跃度是否命中，并返回可用于日志/UI 的判定信息。
   function bossActiveMatches(job) {
     const selectedKeys = getSelectedBossActiveKeys();
     const activeText = getDisplayBossActiveTime(job);
@@ -5496,6 +5572,7 @@
     };
   }
 
+  // 活跃度字段缺失时，从右侧详情 DOM 轻量补充；这里只补活跃度，不触发完整工商抓取。
   async function enrichBossActiveInfoForFilter(job) {
     if (!hasBossActiveFilter() || getDisplayBossActiveTime(job)) return job;
 
@@ -5803,13 +5880,18 @@
     return Array.from(new Set(values.map(normalizeText).filter(Boolean)));
   }
 
-  // 只返回强身份 key，用于列表和详情之间高可信合并。
-  function getJobStrongIdentityKeys(job) {
+  // 可靠身份只包含真实接口 ID，不包含 DOM 拼出来的 sig_ 弱 key。
+  function getReliableJobIdentityKeys(job) {
     if (!job) return [];
 
     const rawJob = job.rawJob || {};
-    const values = [
-      job.jobKey,
+    const rawDetail = job.rawDetail || {};
+    const rawJobInfo = rawDetail.jobInfo || {};
+    const values = [];
+    const jobKey = normalizeText(job.jobKey);
+    if (jobKey && !isSyntheticJobKey(jobKey)) values.push(jobKey);
+
+    [
       job.encryptJobId,
       job.securityId,
       job.lid,
@@ -5819,12 +5901,54 @@
       rawJob.job_id,
       rawJob.securityId,
       rawJob.lid,
-      job.rawDetail && job.rawDetail.jobInfo && job.rawDetail.jobInfo.encryptId,
-      job.rawDetail && job.rawDetail.securityId,
-      job.rawDetail && job.rawDetail.lid,
-    ];
+      rawJobInfo.encryptId,
+      rawJobInfo.encryptJobId,
+      rawJobInfo.jobId,
+      rawJobInfo.job_id,
+      rawDetail.securityId,
+      rawDetail.lid,
+    ].forEach((value) => values.push(value));
 
     return Array.from(new Set(values.map(normalizeText).filter(Boolean)));
+  }
+
+  // 弱签名只能用于没有可靠 ID 的兜底匹配，并且文本字段不能明显冲突。
+  function isWeakDetailCompatible(job, detail) {
+    if (!job || !detail) return false;
+
+    if (!areComparableTextsCompatible(job.jobName, detail.jobName)) return false;
+    if (!areComparableTextsCompatible(job.company, detail.company)) return false;
+
+    const jobSalary = getReadableSalary(job.salary);
+    const detailSalary = getReadableSalary(detail.salary);
+    if (jobSalary && detailSalary && jobSalary !== detailSalary) return false;
+
+    return true;
+  }
+
+  // 主动补拉详情后的安全校验：优先要求可靠 ID 命中，必要时才退回文本兼容判断。
+  function isFetchedDetailCompatibleWithJob(job, detail, options) {
+    const jobKeys = getReliableJobIdentityKeys(job);
+    const detailKeys = new Set(getReliableJobIdentityKeys(detail));
+    if (jobKeys.length && detailKeys.size) {
+      if (jobKeys.some((key) => detailKeys.has(key))) return true;
+      if (!(options && options.allowWeakWithReliableKey)) return false;
+    }
+
+    return isWeakDetailCompatible(job, detail);
+  }
+
+  // 比较岗位名/公司名等文本字段；一边缺失时不阻断补全。
+  function areComparableTextsCompatible(left, right) {
+    const a = normalizeText(left);
+    const b = normalizeText(right);
+    if (!a || !b) return true;
+    return a === b || a.includes(b) || b.includes(a);
+  }
+
+  // 只返回强身份 key，用于列表和详情之间高可信合并。
+  function getJobStrongIdentityKeys(job) {
+    return getReliableJobIdentityKeys(job);
   }
 
   // 详情对象入库索引用 key，和 getJobIdentityKeys 保持兼容。
