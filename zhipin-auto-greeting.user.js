@@ -1886,11 +1886,33 @@
             </div>
 
             <div class="za-mode-block" data-mode-block="fastReply">
-              <div class="za-inline">
-                <select data-field="fastReplyIndex"></select>
+              <input data-field="fastReplyIndex" type="hidden">
+              <div class="za-fast-reply-control">
+                <button class="za-fast-reply-trigger" type="button" data-action="toggleFastReplyPicker" aria-expanded="false" aria-haspopup="dialog">
+                  <span data-role="fastReplyTriggerText">选择常用语</span>
+                  <span class="za-fast-reply-arrow">▾</span>
+                </button>
                 <button type="button" data-action="refreshFastReplies">刷新</button>
               </div>
+              <div class="za-fast-reply-preview" data-role="fastReplyPreview"></div>
               <p class="za-hint" data-role="fastReplyHint">常用语会作为文本注入聊天框，接口失败时使用默认问候语。</p>
+            </div>
+
+            <div class="za-fast-reply-backdrop" data-role="fastReplyBackdrop" hidden>
+              <div class="za-fast-reply-dialog" role="dialog" aria-modal="true" aria-label="选择常用语">
+                <div class="za-fast-reply-head">
+                  <div>
+                    <strong>选择常用语</strong>
+                    <span data-role="fastReplyCount">0 条</span>
+                  </div>
+                  <button class="za-icon-btn" type="button" data-action="closeFastReplyPicker" title="关闭">×</button>
+                </div>
+                <div class="za-fast-reply-search">
+                  <input data-role="fastReplySearch" type="search" autocomplete="off" spellcheck="false" placeholder="搜索常用语内容">
+                  <button type="button" data-action="clearFastReplySearch">清空</button>
+                </div>
+                <div class="za-fast-reply-list" data-role="fastReplyList"></div>
+              </div>
             </div>
 
             <div class="za-mode-block" data-mode-block="customText">
@@ -2023,8 +2045,15 @@
         panel: root.querySelector('.za-panel'),
         toggle: root.querySelector('.za-toggle'),
         status: root.querySelector('[data-role="status"]'),
-        fastReplySelect: root.querySelector('[data-field="fastReplyIndex"]'),
+        fastReplyInput: root.querySelector('[data-field="fastReplyIndex"]'),
+        fastReplyTrigger: root.querySelector('[data-action="toggleFastReplyPicker"]'),
+        fastReplyTriggerText: root.querySelector('[data-role="fastReplyTriggerText"]'),
+        fastReplyPreview: root.querySelector('[data-role="fastReplyPreview"]'),
         fastReplyHint: root.querySelector('[data-role="fastReplyHint"]'),
+        fastReplyBackdrop: root.querySelector('[data-role="fastReplyBackdrop"]'),
+        fastReplyCount: root.querySelector('[data-role="fastReplyCount"]'),
+        fastReplySearch: root.querySelector('[data-role="fastReplySearch"]'),
+        fastReplyList: root.querySelector('[data-role="fastReplyList"]'),
         bossActiveDropdown: root.querySelector('[data-role="bossActiveDropdown"]'),
         bossActiveDropdownText: root.querySelector('[data-role="bossActiveDropdownText"]'),
         bossActiveSelectedList: root.querySelector('[data-role="bossActiveSelectedList"]'),
@@ -2088,11 +2117,38 @@
       });
 
       root.addEventListener('click', (event) => {
-        const target = event.target.closest('[data-action], .za-toggle');
+        const eventTarget = event.target && event.target.nodeType === 1
+          ? event.target
+          : event.target && event.target.parentElement;
+
+        if (eventTarget && eventTarget.dataset && eventTarget.dataset.role === 'fastReplyBackdrop') {
+          this.setFastReplyPickerOpen(false);
+          return;
+        }
+
+        const target = eventTarget && eventTarget.closest('[data-action], .za-toggle');
         if (!target) return;
 
         const action = target.dataset.action || 'toggle';
+        if (action === 'toggleFastReplyPicker') {
+          this.setBossActiveDropdownOpen(false);
+          this.setFastReplyPickerOpen(!this.isFastReplyPickerOpen());
+          return;
+        }
+        if (action === 'closeFastReplyPicker') {
+          this.setFastReplyPickerOpen(false);
+          return;
+        }
+        if (action === 'selectFastReply') {
+          this.selectFastReply(target.dataset.index);
+          return;
+        }
+        if (action === 'clearFastReplySearch') {
+          this.setFastReplySearch('');
+          return;
+        }
         if (action === 'toggleBossActiveDropdown') {
+          this.setFastReplyPickerOpen(false);
           this.setBossActiveDropdownOpen(!this.isBossActiveDropdownOpen());
           return;
         }
@@ -2113,6 +2169,10 @@
       });
 
       root.addEventListener('input', (event) => {
+        if (event.target && event.target.dataset && event.target.dataset.role === 'fastReplySearch') {
+          this.renderFastReplyPickerList();
+          return;
+        }
         if (this.shouldIgnoreConfigFieldEvent(event)) return;
         this.noteCompanyFilterEdit(event);
         this.saveFormToConfig({ event });
@@ -2129,6 +2189,22 @@
       });
 
       root.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && this.isFastReplyPickerOpen()) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.setFastReplyPickerOpen(false);
+          return;
+        }
+
+        if (event.key === 'Enter' && event.target && event.target.dataset && event.target.dataset.role === 'fastReplySearch') {
+          const firstOption = runtime.ui.fastReplyList && runtime.ui.fastReplyList.querySelector('[data-action="selectFastReply"]');
+          if (firstOption) {
+            event.preventDefault();
+            this.selectFastReply(firstOption.dataset.index);
+          }
+          return;
+        }
+
         if (event.key !== 'Enter') return;
         if (!event.target || !event.target.dataset || event.target.dataset.role !== 'bossActiveCustomInput') return;
         event.preventDefault();
@@ -2138,11 +2214,17 @@
       runtime.ui.listViewport.addEventListener('scroll', () => this.renderVirtualList());
 
       pageWindow.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') Automation.stop('已停止', { manual: true });
+        if (event.key !== 'Escape') return;
+        if (this.isFastReplyPickerOpen()) {
+          this.setFastReplyPickerOpen(false);
+          return;
+        }
+        Automation.stop('已停止', { manual: true });
       });
 
       pageWindow.addEventListener('click', (event) => {
         if (!runtime.ui || !runtime.ui.root || runtime.ui.root.contains(event.target)) return;
+        this.setFastReplyPickerOpen(false);
         this.setBossActiveDropdownOpen(false);
       });
     },
@@ -2207,6 +2289,7 @@
 
     // 展开/收起面板并持久化到配置。
     setPanelOpen(open) {
+      if (!open) this.setFastReplyPickerOpen(false);
       saveConfig({ panelOpen: Boolean(open) });
       runtime.ui.root.classList.toggle('za-open', config.panelOpen);
     },
@@ -2304,23 +2387,129 @@
       root.querySelectorAll('[data-text-source-block]').forEach((block) => {
         block.hidden = block.dataset.textSourceBlock !== config.textSource;
       });
+      if (config.greetingMode !== 'fastReply') this.setFastReplyPickerOpen(false);
     },
 
-    // 渲染常用语下拉框；常用语接口失败时显示默认问候语。
+    // 渲染常用语选择入口和预览；弹层列表用普通 DOM 承载长文本，避免原生 select 撑宽面板。
     renderFastReplyOptions() {
       if (!runtime.ui) return;
 
-      const select = runtime.ui.fastReplySelect;
       const replies = config.fastReplies || [];
-      const options = replies.length
-        ? replies.map((item, index) => `<option value="${index}">${escapeHtml(item.text || `常用语 ${index + 1}`)}</option>`).join('')
-        : '<option value="0">默认第一条</option>';
+      const selectedIndex = this.getSafeFastReplyIndex(replies);
+      const selected = replies[selectedIndex];
+      const selectedText = replies.length
+        ? normalizeMessageText((selected && selected.text) || `常用语 ${selectedIndex + 1}`)
+        : APP.defaultGreetingText;
 
-      select.innerHTML = options;
-      select.value = String(Math.min(config.fastReplyIndex || 0, Math.max(replies.length - 1, 0)));
+      if (runtime.ui.fastReplyInput) {
+        runtime.ui.fastReplyInput.value = String(selectedIndex);
+      }
+      if (runtime.ui.fastReplyTriggerText) {
+        runtime.ui.fastReplyTriggerText.textContent = replies.length
+          ? `已选 常用语 ${selectedIndex + 1}`
+          : '未获取常用语';
+      }
+      if (runtime.ui.fastReplyTrigger) {
+        const running = runtime.ui.root.classList.contains('za-running');
+        runtime.ui.fastReplyTrigger.disabled = running || !replies.length;
+        runtime.ui.fastReplyTrigger.setAttribute('aria-expanded', this.isFastReplyPickerOpen() ? 'true' : 'false');
+      }
+      if (runtime.ui.fastReplyPreview) {
+        runtime.ui.fastReplyPreview.textContent = selectedText;
+        runtime.ui.fastReplyPreview.dataset.empty = replies.length ? 'false' : 'true';
+      }
+
       runtime.ui.fastReplyHint.textContent = replies.length
         ? `已获取 ${replies.length} 条常用语；发送时会把所选文本直接注入聊天框。`
         : '获取常用语失败或未刷新时，会把默认问候语直接注入聊天框。';
+      this.renderFastReplyPickerList();
+    },
+
+    getSafeFastReplyIndex(replies) {
+      const total = Array.isArray(replies) ? replies.length : 0;
+      if (!total) return 0;
+
+      const index = Number(config.fastReplyIndex || 0);
+      if (!Number.isFinite(index)) return 0;
+      return Math.min(Math.max(Math.floor(index), 0), total - 1);
+    },
+
+    renderFastReplyPickerList() {
+      if (!runtime.ui || !runtime.ui.fastReplyList) return;
+
+      const replies = config.fastReplies || [];
+      const selectedIndex = this.getSafeFastReplyIndex(replies);
+      const keyword = normalizeText(runtime.ui.fastReplySearch && runtime.ui.fastReplySearch.value).toLowerCase();
+      const matchedReplies = replies
+        .map((item, index) => ({
+          index,
+          text: normalizeMessageText((item && item.text) || `常用语 ${index + 1}`),
+        }))
+        .filter((item) => !keyword || item.text.toLowerCase().includes(keyword));
+
+      if (runtime.ui.fastReplyCount) {
+        runtime.ui.fastReplyCount.textContent = keyword
+          ? `${matchedReplies.length}/${replies.length} 条`
+          : `${replies.length} 条`;
+      }
+
+      runtime.ui.fastReplyList.innerHTML = matchedReplies.length
+        ? matchedReplies.map((item) => {
+            const selectedClass = item.index === selectedIndex ? ' za-selected' : '';
+            const selectedLabel = item.index === selectedIndex ? '<span class="za-fast-reply-selected-mark">当前选中</span>' : '';
+            return `
+              <button type="button" class="za-fast-reply-option${selectedClass}" data-action="selectFastReply" data-index="${item.index}" aria-pressed="${item.index === selectedIndex ? 'true' : 'false'}">
+                <span class="za-fast-reply-option-meta">常用语 ${item.index + 1}${selectedLabel}</span>
+                <span class="za-fast-reply-option-text">${escapeHtml(item.text)}</span>
+              </button>
+            `;
+          }).join('')
+        : `<div class="za-fast-reply-empty">${replies.length ? '没有匹配的常用语' : '暂无常用语，请先刷新'}</div>`;
+    },
+
+    isFastReplyPickerOpen() {
+      return Boolean(runtime.ui && runtime.ui.fastReplyBackdrop && !runtime.ui.fastReplyBackdrop.hidden);
+    },
+
+    setFastReplyPickerOpen(open) {
+      if (!runtime.ui || !runtime.ui.fastReplyBackdrop) return;
+
+      const replies = config.fastReplies || [];
+      const trigger = runtime.ui.fastReplyTrigger;
+      const shouldOpen = Boolean(open && replies.length && !(trigger && trigger.disabled));
+      runtime.ui.fastReplyBackdrop.hidden = !shouldOpen;
+      runtime.ui.root.classList.toggle('za-fast-reply-open', shouldOpen);
+      if (trigger) trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+
+      if (shouldOpen) {
+        this.renderFastReplyPickerList();
+        setTimeout(() => {
+          if (this.isFastReplyPickerOpen() && runtime.ui.fastReplySearch) runtime.ui.fastReplySearch.focus();
+        }, 0);
+        return;
+      }
+
+      if (runtime.ui.fastReplySearch && runtime.ui.fastReplySearch.value) {
+        runtime.ui.fastReplySearch.value = '';
+        this.renderFastReplyPickerList();
+      }
+    },
+
+    setFastReplySearch(value) {
+      if (!runtime.ui || !runtime.ui.fastReplySearch) return;
+      runtime.ui.fastReplySearch.value = value || '';
+      this.renderFastReplyPickerList();
+      runtime.ui.fastReplySearch.focus();
+    },
+
+    selectFastReply(index) {
+      const replies = config.fastReplies || [];
+      const nextIndex = Number(index);
+      if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= replies.length) return;
+
+      saveConfig({ fastReplyIndex: nextIndex });
+      this.renderFastReplyOptions();
+      this.setFastReplyPickerOpen(false);
     },
 
     // 渲染 Boss 活跃度下拉多选、已选标签和自定义选项标签。
@@ -2478,6 +2667,8 @@
     // 运行中锁定配置，防止正在循环时更改等待时间、问候语来源等关键参数。
     setRuntimeConfigLocked(locked) {
       const root = runtime.ui.root;
+      if (locked) this.setFastReplyPickerOpen(false);
+
       root.querySelectorAll('[data-field]').forEach((field) => {
         if (isRuntimeLockExemptField(field.dataset.field)) return;
         field.disabled = locked;
@@ -2493,6 +2684,14 @@
 
       const refreshFastReplies = root.querySelector('[data-action="refreshFastReplies"]');
       if (refreshFastReplies) refreshFastReplies.disabled = locked;
+
+      if (runtime.ui.fastReplyTrigger) {
+        runtime.ui.fastReplyTrigger.disabled = Boolean(locked || !(config.fastReplies || []).length);
+        runtime.ui.fastReplyTrigger.setAttribute('aria-expanded', 'false');
+      }
+      root.querySelectorAll('[data-role="fastReplySearch"], [data-action="clearFastReplySearch"]').forEach((field) => {
+        field.disabled = locked;
+      });
 
       root.querySelectorAll('[data-action="addBossActiveOption"], [data-action="deleteBossActiveOption"]').forEach((button) => {
         button.disabled = locked;
@@ -6306,6 +6505,153 @@
       }
       #zhipin-auto-greeting-root .za-api-method {
         min-width: 0;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-control {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: start;
+        margin-bottom: 8px;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-trigger {
+        width: 100%;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        text-align: left;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-trigger span:first-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-arrow {
+        flex: 0 0 auto;
+        color: var(--za-muted);
+      }
+      #zhipin-auto-greeting-root.za-fast-reply-open .za-fast-reply-arrow {
+        transform: rotate(180deg);
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-preview {
+        max-height: 118px;
+        margin-bottom: 8px;
+        overflow-y: auto;
+        border: 1px solid var(--za-border);
+        border-radius: 6px;
+        padding: 8px;
+        background: #fbfcfd;
+        color: #344054;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-preview[data-empty="true"] {
+        color: var(--za-muted);
+        background: #f8fafc;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-backdrop {
+        position: fixed;
+        z-index: 2147483002;
+        top: 0;
+        right: 0;
+        width: var(--za-width);
+        max-width: calc(100vw - 24px);
+        height: 100vh;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 82px 14px 14px;
+        background: rgba(15, 23, 42, 0.18);
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-dialog {
+        width: 100%;
+        max-height: calc(100vh - 104px);
+        min-height: 240px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--za-border);
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.24);
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-head {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px;
+        border-bottom: 1px solid var(--za-border);
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-head strong,
+      #zhipin-auto-greeting-root .za-fast-reply-head span {
+        display: block;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-head span {
+        color: var(--za-muted);
+        font-size: 12px;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-search {
+        flex: 0 0 auto;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid #eef2f6;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-list {
+        flex: 1 1 auto;
+        min-height: 0;
+        max-height: min(68vh, 520px);
+        overflow-y: auto;
+        padding: 6px;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-option {
+        width: 100%;
+        height: auto;
+        min-height: 0;
+        display: block;
+        margin: 0 0 6px;
+        padding: 8px 10px;
+        border-color: transparent;
+        background: #fff;
+        text-align: left;
+        white-space: normal;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-option:hover {
+        border-color: #e4e7ec;
+        background: #f8fafc;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-option.za-selected {
+        border-color: #b7e4e5;
+        background: #ecfeff;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-option-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+        color: var(--za-muted);
+        font-size: 12px;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-selected-mark {
+        flex: 0 0 auto;
+        color: #007f80;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-option-text {
+        display: block;
+        color: var(--za-text);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      #zhipin-auto-greeting-root .za-fast-reply-empty {
+        padding: 22px 10px;
+        color: var(--za-muted);
+        text-align: center;
       }
       #zhipin-auto-greeting-root .za-selected-area {
         display: flex;
