@@ -6378,6 +6378,9 @@
       #zhipin-auto-greeting-root .za-section {
         padding: 12px 14px 0;
       }
+      #zhipin-auto-greeting-root .za-status + .za-section {
+        padding-top: 20px;
+      }
       #zhipin-auto-greeting-root .za-panel {
         overflow-y: auto;
       }
@@ -6793,7 +6796,7 @@
         margin: 6px 0;
       }
       #zhipin-auto-greeting-root .za-list-section {
-        padding-bottom: 12px;
+        padding-bottom: 24px;
       }
       #zhipin-auto-greeting-root .za-list-viewport {
         position: relative;
