@@ -2882,8 +2882,7 @@
           }
 
           const waitMs = randomDelayMs(config.delayMin, config.delayMax);
-          UI.setStatus(`等待 ${Math.round(waitMs / 1000)} 秒后继续...`, 'info');
-          await sleep(waitMs);
+          await waitWithStatusCountdown(Date.now() + waitMs, (remainingSeconds) => `等待 ${remainingSeconds} 秒后继续...`);
         }
       } catch (error) {
         this.fatal(error.message || String(error));
@@ -3374,17 +3373,8 @@
         RunState.patch({ nextRunAt, nextDelaySeconds: delaySeconds });
       }
 
-      while (!runtime.stopRequested) {
-        const latest = RunState.load();
-        if (!latest || !latest.active) return;
-
-        const remainingMs = Math.max(0, nextRunAt - Date.now());
-        if (remainingMs <= 0) break;
-
-        const remainingSeconds = Math.ceil(remainingMs / 1000);
-        UI.setStatus(`已返回岗位列表，等待 ${remainingSeconds} 秒后继续沟通...`, 'info');
-        await sleep(Math.min(1000, remainingMs));
-      }
+      const completed = await waitWithStatusCountdown(nextRunAt, (remainingSeconds) => `已返回岗位列表，等待 ${remainingSeconds} 秒后继续沟通...`);
+      if (!completed) return;
 
       RunState.patch({ nextRunAt: null, nextDelaySeconds: null });
     },
@@ -5782,6 +5772,22 @@
   // Promise 版延时。
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // 带状态栏刷新的一秒倒计时等待，用于自动沟通间隔提示。
+  async function waitWithStatusCountdown(nextRunAt, createMessage) {
+    while (!runtime.stopRequested) {
+      const state = RunState.load();
+      if (!state || !state.active) return false;
+
+      const remainingMs = Math.max(0, Number(nextRunAt || 0) - Date.now());
+      if (remainingMs <= 0) break;
+
+      const remainingSeconds = Math.ceil(remainingMs / 1000);
+      UI.setStatus(createMessage(remainingSeconds), 'info');
+      await sleep(Math.min(1000, remainingMs));
+    }
+    return !runtime.stopRequested;
   }
 
   // 统一使用 ISO 时间写入记录，便于排序和导出。
