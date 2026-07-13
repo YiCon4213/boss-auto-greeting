@@ -126,6 +126,9 @@
     jobListFirstPageSerial: 0,
     latestJobListResponse: null,
     latestFirstPageJobListResponse: null,
+    latestJobListRequest: null,
+    initialPageUrl: location.href,
+    latestRouteUrl: location.href,
     debugEvents: [],
     // 已沟通 Set 是 IndexedDB 的内存投影，用于列表循环中快速判重。
     contactedJobKeys: new Set(),
@@ -145,6 +148,7 @@
   let config = loadConfig();
 
   cleanupLegacyDebugState();
+  rememberRouteUrl(location.href);
   // document-start 先拦截岗位相关接口，避免页面很早请求岗位列表时脚本拿不到接口数据。
   installNetworkInterceptors();
 
@@ -275,6 +279,16 @@
     }
   }
 
+  // BOSS 会在聊天页加载后清掉 URL 查询参数；document-start 和 history 阶段先保留原始路由。
+  function rememberRouteUrl(href) {
+    try {
+      if (!href) return;
+      const url = new URL(href, location.href);
+      if (!isAllowedDisplayPage(url.href)) return;
+      runtime.latestRouteUrl = url.href;
+    } catch (_) {}
+  }
+
   // 只控制脚本面板显隐，不销毁 UI；SPA 路由切回来时可复用已有节点和状态。
   function setUiDisplayEnabled(enabled) {
     if (!runtime.ui || !runtime.ui.root) return;
@@ -298,6 +312,7 @@
         if (typeof raw !== 'function') return;
 
         const wrapped = function routeAwareHistoryMethod() {
+          rememberRouteUrl(arguments[2]);
           const result = raw.apply(this, arguments);
           setTimeout(syncAllowedPageUi, 0);
           return result;
@@ -520,13 +535,15 @@
     if (typeof rawFetch === 'function' && !rawFetch.__zhipinAutoGreetingPatched) {
       const wrappedFetch = function fetch(input, init) {
         const url = normalizeRequestUrl(input);
+        const requestMeta = createFetchRequestMeta(input, init, url);
+        rememberTrackedJobRequest(url, requestMeta);
         const result = rawFetch.apply(this, arguments);
 
         if (isTrackedJobApi(url)) {
           Promise.resolve(result)
             .then((response) => {
               try {
-                response.clone().text().then((text) => ingestTrackedJobResponse(url, text, 'fetch'));
+                response.clone().text().then((text) => ingestTrackedJobResponse(url, text, 'fetch', requestMeta));
               } catch (error) {
                 console.warn('[ZhipinAuto] fetch 岗位响应读取失败', error);
               }
@@ -546,15 +563,34 @@
     if (XHR && XHR.prototype && !XHR.prototype.__zhipinAutoGreetingPatched) {
       const rawOpen = XHR.prototype.open;
       const rawSend = XHR.prototype.send;
+      const rawSetRequestHeader = XHR.prototype.setRequestHeader;
 
       XHR.prototype.open = function open(method, url) {
         this.__zhipinAutoGreetingUrl = normalizeRequestUrl(url);
+        this.__zhipinAutoGreetingMethod = normalizeText(method || 'GET').toUpperCase() || 'GET';
+        this.__zhipinAutoGreetingHeaders = {};
         return rawOpen.apply(this, arguments);
       };
       maskNative(XHR.prototype.open, rawOpen);
 
+      if (typeof rawSetRequestHeader === 'function') {
+        XHR.prototype.setRequestHeader = function setRequestHeader(name, value) {
+          try {
+            const key = normalizeText(name);
+            if (key) {
+              this.__zhipinAutoGreetingHeaders = this.__zhipinAutoGreetingHeaders || {};
+              this.__zhipinAutoGreetingHeaders[key] = normalizeText(value);
+            }
+          } catch (_) {}
+          return rawSetRequestHeader.apply(this, arguments);
+        };
+        maskNative(XHR.prototype.setRequestHeader, rawSetRequestHeader);
+      }
+
       XHR.prototype.send = function send() {
         const url = this.__zhipinAutoGreetingUrl || '';
+        const requestMeta = createXhrRequestMeta(this, arguments[0], url);
+        rememberTrackedJobRequest(url, requestMeta);
 
         if (isTrackedJobApi(url)) {
           this.addEventListener('loadend', () => {
@@ -565,7 +601,7 @@
               } else if (this.responseType === 'json') {
                 text = JSON.stringify(this.response || {});
               }
-              ingestTrackedJobResponse(url, text, 'xhr');
+              ingestTrackedJobResponse(url, text, 'xhr', requestMeta);
             } catch (error) {
               console.warn('[ZhipinAuto] XHR 岗位响应读取失败', error);
             }
@@ -589,6 +625,114 @@
     } catch (_) {
       return String(input || '');
     }
+  }
+
+  function createFetchRequestMeta(input, init, url) {
+    const request = input && typeof input === 'object' ? input : {};
+    const requestInit = init || {};
+    return {
+      url,
+      method: normalizeText(requestInit.method || request.method || 'GET').toUpperCase() || 'GET',
+      headers: mergeHeadersToObject(request.headers, requestInit.headers),
+      body: requestInit.body,
+      source: 'fetch',
+    };
+  }
+
+  function createXhrRequestMeta(xhr, body, url) {
+    return {
+      url,
+      method: normalizeText(xhr && xhr.__zhipinAutoGreetingMethod || 'GET').toUpperCase() || 'GET',
+      headers: Object.assign({}, xhr && xhr.__zhipinAutoGreetingHeaders || {}),
+      body,
+      source: 'xhr',
+    };
+  }
+
+  function rememberTrackedJobRequest(url, requestMeta) {
+    if (!APP.jobListApiPattern.test(url) || !requestMeta) return;
+    runtime.latestJobListRequest = requestMeta;
+  }
+
+  function mergeHeadersToObject() {
+    const output = {};
+    Array.from(arguments).forEach((headers) => {
+      headersToObject(headers).forEach(([key, value]) => {
+        if (key) output[key] = value;
+      });
+    });
+    return output;
+  }
+
+  function headersToObject(headers) {
+    if (!headers) return [];
+    try {
+      if (typeof headers.forEach === 'function') {
+        const rows = [];
+        headers.forEach((value, key) => rows.push([normalizeText(key), normalizeText(value)]));
+        return rows;
+      }
+      if (Array.isArray(headers)) {
+        return headers.map((row) => [normalizeText(row && row[0]), normalizeText(row && row[1])]);
+      }
+      if (typeof headers === 'object') {
+        return Object.keys(headers).map((key) => [normalizeText(key), normalizeText(headers[key])]);
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  function getLatestReplayableJobListRequest() {
+    if (isReplayableJobListRequest(runtime.latestJobListRequest)) return runtime.latestJobListRequest;
+
+    const latestUrl = findLatestJobListApiUrl();
+    const fallback = latestUrl ? {
+      url: latestUrl,
+      method: 'GET',
+      headers: {},
+      body: undefined,
+      source: 'performance',
+    } : null;
+    return isReplayableJobListRequest(fallback) ? fallback : null;
+  }
+
+  function isReplayableJobListRequest(requestMeta) {
+    if (!requestMeta || !requestMeta.url) return false;
+
+    const method = normalizeText(requestMeta.method || 'GET').toUpperCase();
+    if (method && method !== 'GET' && method !== 'HEAD') {
+      return requestMeta.body !== undefined && requestMeta.body !== null || hasMeaningfulJobListUrlParams(requestMeta.url);
+    }
+
+    return hasMeaningfulJobListUrlParams(requestMeta.url);
+  }
+
+  function hasMeaningfulJobListUrlParams(url) {
+    try {
+      const target = new URL(url, location.href);
+      let meaningful = false;
+      target.searchParams.forEach((value, key) => {
+        if (!isVolatileJobListParam(key) && normalizeText(value)) meaningful = true;
+      });
+      return meaningful;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildJobListFetchInit(requestMeta) {
+    const method = normalizeText(requestMeta && requestMeta.method || 'GET').toUpperCase() || 'GET';
+    const headers = Object.assign({ Accept: 'application/json, text/plain, */*' }, requestMeta && requestMeta.headers || {});
+    const init = {
+      method,
+      credentials: 'include',
+      headers,
+    };
+
+    if (method !== 'GET' && method !== 'HEAD' && requestMeta && requestMeta.body !== undefined && requestMeta.body !== null) {
+      init.body = requestMeta.body;
+    }
+    return init;
   }
 
   // 保持包装函数的 toString 接近原始实现，降低页面检测 monkey patch 的概率。
@@ -1470,14 +1614,10 @@
 
     // 根据 performance 记录中的最近列表 URL 主动补抓岗位列表，作为网络拦截失败兜底。
     async fetchLatestJobList() {
-      const url = findLatestJobListApiUrl();
       const fetcher = nativePageFetch || (typeof pageWindow.fetch === 'function' && pageWindow.fetch.bind(pageWindow));
-      if (!url || !fetcher) return false;
-
-      const response = await fetcher(url, {
-        credentials: 'include',
-        headers: { Accept: 'application/json, text/plain, */*' },
-      });
+      const request = getLatestReplayableJobListRequest();
+      if (!request || !fetcher) return false;
+      const response = await fetcher(request.url, buildJobListFetchInit(request));
       if (!response.ok) throw new Error(`岗位列表请求失败：HTTP ${response.status}`);
 
       const payload = await response.json();
@@ -1485,7 +1625,7 @@
         throw new Error(`岗位列表请求失败：${normalizeText(payload && payload.message) || '未知错误'}`);
       }
 
-      ingestJobListResponse(url, JSON.stringify(payload), 'active-fetch');
+      ingestJobListResponse(request.url, JSON.stringify(payload), 'active-fetch');
       return runtime.jobPool.length > 0;
     },
 
@@ -4281,9 +4421,41 @@
   }
 
   // 根据岗位 key 组装详情接口 URL，用于主动补拉详情。
+  function getJobDetailRequestIdentity(job) {
+    const rawJob = job && job.rawJob || {};
+    const rawDetail = job && job.rawDetail || {};
+    const rawJobInfo = rawDetail.jobInfo || {};
+    const identity = {
+      encryptJobId: normalizeText(job && (
+        job.encryptJobId ||
+        rawJob.encryptJobId ||
+        rawJob.encryptId ||
+        rawJob.jobId ||
+        rawJob.job_id ||
+        rawJobInfo.encryptJobId ||
+        rawJobInfo.encryptId ||
+        rawJobInfo.jobId ||
+        rawJobInfo.job_id
+      )),
+      securityId: normalizeText(job && (job.securityId || rawJob.securityId || rawDetail.securityId || rawJobInfo.securityId)),
+      lid: normalizeText(job && (job.lid || rawJob.lid || rawDetail.lid || rawJobInfo.lid)),
+    };
+
+    getRouteJobDetailIdentities().some((routeIdentity) => {
+      if (!isRouteIdentityCompatible(identity, routeIdentity)) return false;
+      if (!identity.encryptJobId && routeIdentity.encryptJobId) identity.encryptJobId = routeIdentity.encryptJobId;
+      if (!identity.securityId && routeIdentity.securityId) identity.securityId = routeIdentity.securityId;
+      if (!identity.lid && routeIdentity.lid) identity.lid = routeIdentity.lid;
+      return Boolean(identity.securityId && identity.lid);
+    });
+
+    return identity;
+  }
+
   function buildJobDetailApiUrl(job) {
-    const securityId = normalizeText(job && (job.securityId || job.rawJob && job.rawJob.securityId));
-    const lid = normalizeText(job && (job.lid || job.rawJob && job.rawJob.lid));
+    const identity = getJobDetailRequestIdentity(job);
+    const securityId = identity.securityId;
+    const lid = identity.lid;
     if (!securityId || !lid) return '';
 
     const url = new URL('/wapi/zpgeek/job/detail.json', location.origin);
@@ -4291,6 +4463,48 @@
     url.searchParams.set('lid', lid);
     url.searchParams.set('_', String(Date.now()));
     return url.href;
+  }
+
+  function getRouteJobDetailIdentities() {
+    return [
+      runtime.latestRouteUrl,
+      runtime.initialPageUrl,
+      location.href,
+    ]
+      .map(parseJobDetailIdentityFromUrl)
+      .filter(Boolean);
+  }
+
+  function parseJobDetailIdentityFromUrl(href) {
+    try {
+      if (!href) return null;
+      const url = new URL(href, location.href);
+      if (url.origin !== location.origin) return null;
+
+      const pathname = url.pathname.replace(/\/+$/, '');
+      const detailMatch = pathname.match(/\/job_detail\/([A-Za-z0-9_~-]+)(?:\.html)?$/);
+      const encryptJobId = normalizeText(
+        url.searchParams.get('jobId') ||
+        url.searchParams.get('encryptJobId') ||
+        url.searchParams.get('encryptId') ||
+        (detailMatch && detailMatch[1])
+      );
+      const securityId = normalizeText(url.searchParams.get('securityId'));
+      const lid = normalizeText(url.searchParams.get('lid'));
+      if (!encryptJobId && !securityId && !lid) return null;
+
+      return { encryptJobId, securityId, lid, href: url.href };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isRouteIdentityCompatible(jobIdentity, routeIdentity) {
+    if (!routeIdentity) return false;
+    const jobId = normalizeText(jobIdentity && jobIdentity.encryptJobId);
+    const routeJobId = normalizeText(routeIdentity.encryptJobId);
+    if (jobId && routeJobId && jobId !== routeJobId) return false;
+    return true;
   }
 
   // 从 performance 资源记录里找最近一次列表接口，主动补抓时使用。
