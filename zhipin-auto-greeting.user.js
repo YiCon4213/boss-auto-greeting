@@ -101,6 +101,9 @@
     // 公司过滤和数据维护选项。
     companyFilterMode: 'partial',
     companyFilterValue: '',
+    companyBlacklistMode: 'partial',
+    companyBlacklistValue: '',
+    companyBlacklistRules: [],
     bossActiveFilterValues: [],
     bossActiveCustomOptions: [],
     exportType: 'json',
@@ -203,6 +206,10 @@
     CONFIG_FIELD_KEYS.forEach((key) => {
       next[key] = raw[key] === undefined ? DEFAULT_CONFIG[key] : raw[key];
     });
+    next.companyFilterMode = getCompanyMatchMode(next.companyFilterMode);
+    next.companyBlacklistMode = getCompanyMatchMode(next.companyBlacklistMode);
+    next.companyBlacklistValue = normalizeText(next.companyBlacklistValue);
+    next.companyBlacklistRules = normalizeCompanyBlacklistRules(next.companyBlacklistRules);
     next.bossActiveCustomOptions = normalizeBossActiveOptions(next.bossActiveCustomOptions)
       .filter((item) => !BOSS_ACTIVE_BUILTIN_KEYS.has(normalizeBossActiveText(item)));
 
@@ -212,6 +219,45 @@
       .filter((item) => availableKeys.has(normalizeBossActiveText(item)));
 
     return next;
+  }
+
+  // 公司匹配模式统一归一，避免旧配置或手动编辑的异常值影响过滤。
+  function getCompanyMatchMode(mode) {
+    return /^(?:exact|partial|regex)$/.test(String(mode || '')) ? String(mode) : 'partial';
+  }
+
+  // 黑名单列表中展示给用户看的匹配模式标签。
+  function getCompanyMatchModeLabel(mode) {
+    if (mode === 'exact') return '全量';
+    if (mode === 'regex') return '正则';
+    return '部分';
+  }
+
+  // 公司黑名单规则支持数组对象，也兼容用户手动写入的换行/逗号文本。
+  function normalizeCompanyBlacklistRules(values) {
+    const list = Array.isArray(values)
+      ? values
+      : String(values || '').split(/[\n,，]+/).map((value) => ({ mode: 'partial', value }));
+    const seen = new Set();
+    const output = [];
+
+    list.forEach((item) => {
+      const isObjectItem = item && typeof item === 'object';
+      const mode = getCompanyMatchMode(isObjectItem ? item.mode : 'partial');
+      const value = normalizeText(isObjectItem ? item.value : item);
+      if (!value) return;
+
+      const key = `${mode}:${value}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      output.push({
+        id: normalizeText(isObjectItem && item.id) || `black_${hashString(key)}`,
+        mode,
+        value,
+      });
+    });
+
+    return output;
   }
 
   // 加载旧配置时清掉明显由浏览器自动填充/历史恢复写入的残留值。
@@ -2464,6 +2510,31 @@
           </section>
 
           <section class="za-section">
+            <h3>公司黑名单</h3>
+            <div class="za-inline">
+              <select data-field="companyBlacklistMode">
+                <option value="exact">全量匹配</option>
+                <option value="partial">部分匹配</option>
+                <option value="regex">正则匹配</option>
+              </select>
+              <input data-field="companyBlacklistValue" type="text" autocomplete="off" spellcheck="false" placeholder="输入公司黑名单">
+              <button type="button" data-action="addCompanyBlacklistRule">添加</button>
+            </div>
+            <div class="za-multi-dropdown" data-role="companyBlacklistDropdown">
+              <button class="za-multi-trigger" type="button" data-action="toggleCompanyBlacklistDropdown" aria-expanded="false">
+                <span data-role="companyBlacklistDropdownText">查看已添加黑名单</span>
+                <span class="za-multi-arrow">⌄</span>
+              </button>
+              <div class="za-multi-menu" data-role="companyBlacklistOptionMenu" hidden></div>
+            </div>
+            <div class="za-inline za-blacklist-actions" data-role="companyBlacklistActions">
+              <button type="button" data-action="removeCompanyBlacklistRule">删除选中</button>
+              <button type="button" class="za-danger-soft" data-action="clearCompanyBlacklistRules">全部删除</button>
+            </div>
+            <p class="za-hint">任意黑名单命中都会在沟通前跳过该公司。</p>
+          </section>
+
+          <section class="za-section">
             <h3>Boss活跃度筛选</h3>
             <div class="za-selected-area" data-role="bossActiveSelectedList"></div>
             <div class="za-multi-dropdown" data-role="bossActiveDropdown">
@@ -2550,6 +2621,12 @@
         bossActiveOptionMenu: root.querySelector('[data-role="bossActiveOptionMenu"]'),
         bossActiveCustomInput: root.querySelector('[data-role="bossActiveCustomInput"]'),
         bossActiveCustomList: root.querySelector('[data-role="bossActiveCustomList"]'),
+        companyBlacklistDropdown: root.querySelector('[data-role="companyBlacklistDropdown"]'),
+        companyBlacklistDropdownText: root.querySelector('[data-role="companyBlacklistDropdownText"]'),
+        companyBlacklistOptionMenu: root.querySelector('[data-role="companyBlacklistOptionMenu"]'),
+        companyBlacklistRemoveButton: root.querySelector('[data-action="removeCompanyBlacklistRule"]'),
+        companyBlacklistClearButton: root.querySelector('[data-action="clearCompanyBlacklistRules"]'),
+        companyBlacklistSelectedIds: new Set(),
         debugLogEnabled: root.querySelector('[data-role="debugLogEnabled"]'),
         debugLogStatus: root.querySelector('[data-role="debugLogStatus"]'),
         listViewport: root.querySelector('[data-role="listViewport"]'),
@@ -2564,6 +2641,7 @@
       this.applyConfigToForm();
       this.renderDebugLogControls();
       this.renderFastReplyOptions();
+      this.renderCompanyBlacklistRules();
       this.renderBossActiveFilterOptions();
       this.setPanelOpen(config.panelOpen);
       this.scheduleConfigReapply();
@@ -2625,6 +2703,7 @@
         const action = target.dataset.action || 'toggle';
         if (action === 'toggleFastReplyPicker') {
           this.setBossActiveDropdownOpen(false);
+          this.setCompanyBlacklistDropdownOpen(false);
           this.setFastReplyPickerOpen(!this.isFastReplyPickerOpen());
           return;
         }
@@ -2642,7 +2721,14 @@
         }
         if (action === 'toggleBossActiveDropdown') {
           this.setFastReplyPickerOpen(false);
+          this.setCompanyBlacklistDropdownOpen(false);
           this.setBossActiveDropdownOpen(!this.isBossActiveDropdownOpen());
+          return;
+        }
+        if (action === 'toggleCompanyBlacklistDropdown') {
+          this.setFastReplyPickerOpen(false);
+          this.setBossActiveDropdownOpen(false);
+          this.setCompanyBlacklistDropdownOpen(!this.isCompanyBlacklistDropdownOpen());
           return;
         }
         if (action !== 'stop') this.unlockStatus();
@@ -2655,11 +2741,21 @@
         if (action === 'clearRecordsByTime') RecordCleaner.clearByTime();
         if (action === 'clearAllRecords') RecordCleaner.clearAll();
         if (action === 'clearDebugLogs') DebugLogService.clearLogs();
+        if (action === 'addCompanyBlacklistRule') this.addCompanyBlacklistRule();
+        if (action === 'removeCompanyBlacklistRule') this.removeCompanyBlacklistRule(target.dataset.id);
+        if (action === 'clearCompanyBlacklistRules') this.clearCompanyBlacklistRules();
         if (action === 'addBossActiveOption') this.addBossActiveCustomOption();
         if (action === 'deleteBossActiveOption') this.deleteBossActiveCustomOption(target.dataset.value);
         if (action === 'removeBossActiveSelection') this.removeBossActiveSelection(target.dataset.value);
         if (action !== 'toggleBossActiveDropdown' && !target.closest('[data-role="bossActiveDropdown"]')) {
           this.setBossActiveDropdownOpen(false);
+        }
+        if (
+          action !== 'toggleCompanyBlacklistDropdown' &&
+          !target.closest('[data-role="companyBlacklistDropdown"]') &&
+          !target.closest('[data-role="companyBlacklistActions"]')
+        ) {
+          this.setCompanyBlacklistDropdownOpen(false);
         }
       });
 
@@ -2679,6 +2775,10 @@
         }
         if (this.shouldIgnoreConfigFieldEvent(event)) return;
         this.noteCompanyFilterEdit(event);
+        if (event.target && event.target.dataset && event.target.dataset.role === 'companyBlacklistRuleOption') {
+          this.setCompanyBlacklistRuleSelected(event.target.value, event.target.checked, true);
+          return;
+        }
         if (event.target && event.target.dataset && event.target.dataset.role === 'bossActiveOption') {
           this.setBossActiveOptionSelected(event.target.value, event.target.checked, true);
           return;
@@ -2694,6 +2794,18 @@
           this.setFastReplyPickerOpen(false);
           return;
         }
+        if (event.key === 'Escape' && this.isCompanyBlacklistDropdownOpen()) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.setCompanyBlacklistDropdownOpen(false);
+          return;
+        }
+        if (event.key === 'Escape' && this.isBossActiveDropdownOpen()) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.setBossActiveDropdownOpen(false);
+          return;
+        }
 
         if (event.key === 'Enter' && event.target && event.target.dataset && event.target.dataset.role === 'fastReplySearch') {
           const firstOption = runtime.ui.fastReplyList && runtime.ui.fastReplyList.querySelector('[data-action="selectFastReply"]');
@@ -2705,6 +2817,11 @@
         }
 
         if (event.key !== 'Enter') return;
+        if (event.target && event.target.dataset && event.target.dataset.field === 'companyBlacklistValue') {
+          event.preventDefault();
+          this.addCompanyBlacklistRule();
+          return;
+        }
         if (!event.target || !event.target.dataset || event.target.dataset.role !== 'bossActiveCustomInput') return;
         event.preventDefault();
         this.addBossActiveCustomOption();
@@ -2718,12 +2835,21 @@
           this.setFastReplyPickerOpen(false);
           return;
         }
+        if (this.isCompanyBlacklistDropdownOpen()) {
+          this.setCompanyBlacklistDropdownOpen(false);
+          return;
+        }
+        if (this.isBossActiveDropdownOpen()) {
+          this.setBossActiveDropdownOpen(false);
+          return;
+        }
         Automation.stop('已停止', { manual: true });
       });
 
       pageWindow.addEventListener('click', (event) => {
         if (!runtime.ui || !runtime.ui.root || runtime.ui.root.contains(event.target)) return;
         this.setFastReplyPickerOpen(false);
+        this.setCompanyBlacklistDropdownOpen(false);
         this.setBossActiveDropdownOpen(false);
       });
     },
@@ -2820,6 +2946,7 @@
 
       this.applyModeVisibility();
       this.renderDebugLogControls();
+      this.renderCompanyBlacklistRules();
       this.renderBossActiveFilterOptions();
     },
 
@@ -3037,6 +3164,195 @@
       this.setFastReplyPickerOpen(false);
     },
 
+    // 渲染公司黑名单下拉多选，每条规则展示匹配模式，便于区分全量/部分/正则。
+    renderCompanyBlacklistRules() {
+      if (!runtime.ui || !runtime.ui.companyBlacklistOptionMenu) return;
+
+      const rules = normalizeCompanyBlacklistRules(config.companyBlacklistRules);
+      const selectedIds = this.getCompanyBlacklistSelectedIds(rules);
+      const running = runtime.ui.root.classList.contains('za-running');
+      runtime.ui.companyBlacklistOptionMenu.innerHTML = rules.length
+        ? rules.map((rule) => {
+            const checked = selectedIds.has(rule.id) ? ' checked' : '';
+            const disabled = running ? ' disabled' : '';
+            return `
+              <div class="za-multi-option za-blacklist-option">
+                <label class="za-blacklist-option-label">
+                  <input data-role="companyBlacklistRuleOption" type="checkbox" value="${escapeHtml(rule.id)}"${checked}${disabled}>
+                  <span title="${escapeHtml(rule.value)}">[${escapeHtml(getCompanyMatchModeLabel(rule.mode))}] ${escapeHtml(rule.value)}</span>
+                </label>
+                <button class="za-blacklist-delete" type="button" data-action="removeCompanyBlacklistRule" data-id="${escapeHtml(rule.id)}" title="删除该黑名单"${disabled}>×</button>
+              </div>
+            `;
+          }).join('')
+        : '<div class="za-empty-text">暂无公司黑名单</div>';
+
+      if (runtime.ui.companyBlacklistDropdownText) {
+        runtime.ui.companyBlacklistDropdownText.textContent = rules.length
+          ? selectedIds.size
+            ? `已选 ${selectedIds.size}/${rules.length} 条`
+            : `已添加 ${rules.length} 条`
+          : '暂无公司黑名单';
+      }
+
+      const trigger = runtime.ui.companyBlacklistDropdown &&
+        runtime.ui.companyBlacklistDropdown.querySelector('[data-action="toggleCompanyBlacklistDropdown"]');
+      if (trigger) {
+        trigger.disabled = running || !rules.length;
+        trigger.setAttribute('aria-expanded', this.isCompanyBlacklistDropdownOpen() ? 'true' : 'false');
+      }
+      runtime.ui.companyBlacklistOptionMenu.querySelectorAll('input[data-role="companyBlacklistRuleOption"]').forEach((input) => {
+        input.disabled = running;
+      });
+      if (runtime.ui.companyBlacklistRemoveButton) {
+        runtime.ui.companyBlacklistRemoveButton.disabled = running || !selectedIds.size;
+      }
+      if (runtime.ui.companyBlacklistClearButton) {
+        runtime.ui.companyBlacklistClearButton.disabled = running || !rules.length;
+      }
+      if (!rules.length) this.setCompanyBlacklistDropdownOpen(false);
+    },
+
+    // 获取当前用于删除的黑名单勾选项，并清掉已不存在的规则 ID。
+    getCompanyBlacklistSelectedIds(rules) {
+      const availableIds = new Set((rules || normalizeCompanyBlacklistRules(config.companyBlacklistRules)).map((rule) => rule.id));
+      const selectedIds = runtime.ui.companyBlacklistSelectedIds instanceof Set
+        ? runtime.ui.companyBlacklistSelectedIds
+        : new Set();
+      Array.from(selectedIds).forEach((id) => {
+        if (!availableIds.has(id)) selectedIds.delete(id);
+      });
+      runtime.ui.companyBlacklistSelectedIds = selectedIds;
+      return selectedIds;
+    },
+
+    // 判断公司黑名单下拉是否打开。
+    isCompanyBlacklistDropdownOpen() {
+      return Boolean(runtime.ui && runtime.ui.companyBlacklistOptionMenu && !runtime.ui.companyBlacklistOptionMenu.hidden);
+    },
+
+    // 打开/关闭公司黑名单下拉，并同步 aria 状态。
+    setCompanyBlacklistDropdownOpen(open) {
+      if (!runtime.ui || !runtime.ui.companyBlacklistOptionMenu || !runtime.ui.companyBlacklistDropdown) return;
+      const trigger = runtime.ui.companyBlacklistDropdown.querySelector('[data-action="toggleCompanyBlacklistDropdown"]');
+      const rules = normalizeCompanyBlacklistRules(config.companyBlacklistRules);
+      const shouldOpen = Boolean(open && rules.length && !(trigger && trigger.disabled));
+      runtime.ui.companyBlacklistOptionMenu.hidden = !shouldOpen;
+      runtime.ui.companyBlacklistDropdown.classList.toggle('za-open', shouldOpen);
+      if (trigger) trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+    },
+
+    // 勾选或取消某个黑名单规则，仅影响“删除选中”的临时选择状态。
+    setCompanyBlacklistRuleSelected(id, selected, keepDropdownOpen) {
+      const key = normalizeText(id);
+      if (!key || !runtime.ui) return;
+
+      const selectedIds = this.getCompanyBlacklistSelectedIds();
+      if (selected) {
+        selectedIds.add(key);
+      } else {
+        selectedIds.delete(key);
+      }
+      this.renderCompanyBlacklistRules();
+      this.setCompanyBlacklistDropdownOpen(Boolean(keepDropdownOpen));
+    },
+
+    // 添加公司黑名单规则，保存前校验正则并按“模式+文本”去重。
+    addCompanyBlacklistRule() {
+      const root = runtime.ui && runtime.ui.root;
+      if (!root) return;
+
+      const modeField = root.querySelector('[data-field="companyBlacklistMode"]');
+      const valueField = root.querySelector('[data-field="companyBlacklistValue"]');
+      const mode = getCompanyMatchMode(modeField && modeField.value);
+      const value = normalizeText(valueField && valueField.value);
+      if (!value) {
+        UI.setStatus('请输入公司黑名单文本', 'warn');
+        return;
+      }
+      if (mode === 'regex') {
+        try {
+          new RegExp(value);
+        } catch (error) {
+          UI.setStatus(`公司黑名单正则无效：${error.message}`, 'error');
+          return;
+        }
+      }
+
+      const rules = normalizeCompanyBlacklistRules(config.companyBlacklistRules);
+      const exists = rules.some((rule) => rule.mode === mode && rule.value === value);
+      if (exists) {
+        UI.setStatus('该公司黑名单已存在', 'warn');
+        if (valueField) valueField.value = '';
+        saveConfig({ companyBlacklistMode: mode, companyBlacklistValue: '' });
+        return;
+      }
+
+      const key = `${mode}:${value}`;
+      const nextRule = {
+        id: `black_${hashString(`${key}:${Date.now()}`)}`,
+        mode,
+        value,
+      };
+      saveConfig({
+        companyBlacklistMode: mode,
+        companyBlacklistValue: '',
+        companyBlacklistRules: rules.concat(nextRule),
+      });
+      if (valueField) valueField.value = '';
+      this.renderCompanyBlacklistRules();
+      UI.setStatus(`已添加公司黑名单：${getCompanyMatchModeLabel(mode)} / ${value}`, 'ok');
+    },
+
+    // 删除当前勾选的公司黑名单规则，支持一次删除多条。
+    removeCompanyBlacklistRule(id) {
+      const rules = normalizeCompanyBlacklistRules(config.companyBlacklistRules);
+      const selectedIds = id
+        ? new Set([normalizeText(id)].filter(Boolean))
+        : new Set(this.getCompanyBlacklistSelectedIds(rules));
+      if (!selectedIds.size) {
+        UI.setStatus('请选择要移除的公司黑名单', 'warn');
+        return;
+      }
+
+      const nextRules = rules.filter((rule) => !selectedIds.has(rule.id));
+      if (nextRules.length === rules.length) return;
+
+      if (id) {
+        this.getCompanyBlacklistSelectedIds(rules).delete(normalizeText(id));
+      } else {
+        runtime.ui.companyBlacklistSelectedIds = new Set();
+      }
+      saveConfig({ companyBlacklistRules: nextRules });
+      this.renderCompanyBlacklistRules();
+      this.setCompanyBlacklistDropdownOpen(Boolean(nextRules.length));
+      UI.setStatus(`已删除 ${rules.length - nextRules.length} 条公司黑名单`, 'ok');
+    },
+
+    // 删除全部公司黑名单规则。
+    async clearCompanyBlacklistRules() {
+      const rules = normalizeCompanyBlacklistRules(config.companyBlacklistRules);
+      if (!rules.length) {
+        UI.setStatus('暂无公司黑名单可删除', 'warn');
+        return;
+      }
+
+      let confirmed = false;
+      try {
+        confirmed = await askConfirm(`确定删除全部 ${rules.length} 条公司黑名单吗？`);
+      } catch (error) {
+        UI.setStatus(error.message || '无法打开确认弹窗', 'error');
+        return;
+      }
+      if (!confirmed) return;
+
+      runtime.ui.companyBlacklistSelectedIds = new Set();
+      saveConfig({ companyBlacklistRules: [] });
+      this.renderCompanyBlacklistRules();
+      this.setCompanyBlacklistDropdownOpen(false);
+      UI.setStatus('已删除全部公司黑名单', 'ok');
+    },
+
     // 渲染 Boss 活跃度下拉多选、已选标签和自定义选项标签。
     renderBossActiveFilterOptions() {
       if (!runtime.ui || !runtime.ui.bossActiveOptionMenu) return;
@@ -3198,7 +3514,11 @@
     // 运行中锁定配置，防止正在循环时更改等待时间、问候语来源等关键参数。
     setRuntimeConfigLocked(locked) {
       const root = runtime.ui.root;
-      if (locked) this.setFastReplyPickerOpen(false);
+      if (locked) {
+        this.setFastReplyPickerOpen(false);
+        this.setCompanyBlacklistDropdownOpen(false);
+        this.setBossActiveDropdownOpen(false);
+      }
 
       root.querySelectorAll('[data-field]').forEach((field) => {
         if (isRuntimeLockExemptField(field.dataset.field)) return;
@@ -3209,7 +3529,7 @@
         field.disabled = locked;
       });
 
-      root.querySelectorAll('[data-lock-field], [data-role="bossActiveOption"], [data-action="toggleBossActiveDropdown"], [data-action="removeBossActiveSelection"]').forEach((field) => {
+      root.querySelectorAll('[data-lock-field], [data-role="companyBlacklistRuleOption"], [data-role="bossActiveOption"], [data-action="toggleCompanyBlacklistDropdown"], [data-action="toggleBossActiveDropdown"], [data-action="removeBossActiveSelection"]').forEach((field) => {
         field.disabled = locked;
       });
 
@@ -3224,9 +3544,10 @@
         field.disabled = locked;
       });
 
-      root.querySelectorAll('[data-action="addBossActiveOption"], [data-action="deleteBossActiveOption"]').forEach((button) => {
+      root.querySelectorAll('[data-action="addCompanyBlacklistRule"], [data-action="removeCompanyBlacklistRule"], [data-action="clearCompanyBlacklistRules"], [data-action="addBossActiveOption"], [data-action="deleteBossActiveOption"]').forEach((button) => {
         button.disabled = locked;
       });
+      this.renderCompanyBlacklistRules();
     },
 
     // 从 IndexedDB 读取已沟通记录并刷新虚拟列表。
@@ -3641,17 +3962,25 @@
       while (cursorIndex < cards.length) {
         const card = cards[cursorIndex];
         const job = runtime.cardJobMap.get(card) || JobRepository.normalizeDomOnlyJob(card, cursorIndex);
+        const domInfo = extractCardInfo(card);
         logDebugEvent('process_card', {
           cursorIndex,
           job: summarizeJobForDebug(job),
-          domInfo: summarizeDomInfoForDebug(extractCardInfo(card)),
+          domInfo: summarizeDomInfoForDebug(domInfo),
           listState: getDebugListState(),
         });
 
-        // 公司过滤和已沟通跳过都在点击沟通前完成，减少无意义的详情页/聊天页跳转。
-        if (!companyMatches(job.company || extractCardInfo(card).company)) {
+        // 公司筛选、黑名单和已沟通跳过都在点击沟通前完成，减少无意义的详情页/聊天页跳转。
+        if (!companyMatches(job.company || domInfo.company)) {
           cursorIndex += 1;
           RunState.patch({ cursorIndex });
+          continue;
+        }
+
+        const blacklistDecision = findCompanyBlacklistMatch(job, domInfo.company);
+        if (blacklistDecision) {
+          await this.skipCompanyBlacklist(job, cursorIndex, blacklistDecision);
+          cursorIndex += 1;
           continue;
         }
 
@@ -3673,6 +4002,38 @@
       }
 
       return 'done';
+    },
+
+    // 公司黑名单命中时记录跳过原因并推进游标；该状态不会加入已沟通判重集合。
+    async skipCompanyBlacklist(job, cursorIndex, decision) {
+      const rule = decision && decision.rule || {};
+      const matchedCompany = normalizeText(decision && decision.company) || getDisplayCompany(job) || '未知公司';
+      const modeLabel = getCompanyMatchModeLabel(rule.mode);
+      UI.setStatus(`公司黑名单命中，跳过：${matchedCompany}`, 'warn');
+      logDebugEvent('skip_company_blacklist', {
+        cursorIndex,
+        matchedCompany,
+        rule: {
+          mode: rule.mode,
+          modeLabel,
+          value: rule.value,
+        },
+        job: summarizeJobForDebug(job),
+      }, 'warn');
+      await Database.saveJobRecord(job, {
+        status: 'skipped_blacklist',
+        listIndex: cursorIndex,
+        skippedAt: nowIso(),
+        skipReason: 'company_blacklist',
+        blacklistMode: rule.mode,
+        blacklistModeLabel: modeLabel,
+        blacklistValue: rule.value,
+        blacklistMatchedCompany: matchedCompany,
+        pageUrl: location.href,
+      });
+      RunState.patch({ cursorIndex: cursorIndex + 1 });
+      scrollAhead(cursorIndex + 1);
+      return 'processed';
     },
 
     // 单个岗位的沟通流程：选中卡片、补详情、保存 clicked、点击沟通按钮。
@@ -3722,6 +4083,11 @@
         apiDetail: summarizeJobForDebug(apiDetail),
         domDetail: summarizeJobForDebug(domDetail),
       });
+
+      const blacklistDecision = findCompanyBlacklistMatch(job);
+      if (blacklistDecision) {
+        return this.skipCompanyBlacklist(job, cursorIndex, blacklistDecision);
+      }
 
       const activeDecision = bossActiveMatches(job);
       if (!activeDecision.matched) {
@@ -6179,15 +6545,57 @@
     target.dispatchEvent(new Ctor('keyup', eventInit));
   }
 
+  // 公司名按模式匹配，供公司筛选和黑名单共用。
+  function companyTextMatches(targetText, mode, valueText) {
+    const target = normalizeText(targetText);
+    const value = normalizeText(valueText);
+    if (!target || !value) return false;
+
+    const matchMode = getCompanyMatchMode(mode);
+    if (matchMode === 'exact') return target === value;
+    if (matchMode === 'regex') return new RegExp(value).test(target);
+    return target.includes(value);
+  }
+
   // 公司筛选逻辑，支持精确、包含、正则三种模式。
   function companyMatches(company) {
     const value = normalizeText(config.companyFilterValue);
     if (!value) return true;
+    return companyTextMatches(company, config.companyFilterMode, value);
+  }
 
-    const target = normalizeText(company);
-    if (config.companyFilterMode === 'exact') return target === value;
-    if (config.companyFilterMode === 'regex') return new RegExp(value).test(target);
-    return target.includes(value);
+  // 收集岗位上可用于黑名单匹配的公司名，详情补全后会包含全称/简称。
+  function getCompanyMatchCandidates(job, fallbackCompany) {
+    const values = [
+      job && job.company,
+      job && job.companyFullName,
+      job && job.companyShortName,
+      fallbackCompany,
+    ];
+    return Array.from(new Set(values.map(normalizeText).filter(Boolean)));
+  }
+
+  // 任意一条公司黑名单规则命中即跳过，返回命中的规则和公司文本。
+  function findCompanyBlacklistMatch(job, fallbackCompany) {
+    const rules = normalizeCompanyBlacklistRules(config.companyBlacklistRules);
+    if (!rules.length) return null;
+
+    const candidates = getCompanyMatchCandidates(job, fallbackCompany);
+    for (const rule of rules) {
+      for (const company of candidates) {
+        try {
+          if (companyTextMatches(company, rule.mode, rule.value)) {
+            return { rule, company };
+          }
+        } catch (error) {
+          logDebugEvent('invalid_company_blacklist_rule', {
+            rule,
+            error: error.message || String(error),
+          }, 'warn');
+        }
+      }
+    }
+    return null;
   }
 
   // 根据当前配置判断岗位 Boss 活跃度是否命中，并返回可用于日志/UI 的判定信息。
@@ -6242,6 +6650,15 @@
         new RegExp(config.companyFilterValue);
       } catch (error) {
         return `公司正则无效：${error.message}`;
+      }
+    }
+
+    for (const rule of normalizeCompanyBlacklistRules(config.companyBlacklistRules)) {
+      if (rule.mode !== 'regex') continue;
+      try {
+        new RegExp(rule.value);
+      } catch (error) {
+        return `公司黑名单正则无效：${rule.value} / ${error.message}`;
       }
     }
 
@@ -7540,7 +7957,43 @@
       #zhipin-auto-greeting-root .za-multi-option:hover {
         background: #f8fafc;
       }
+      #zhipin-auto-greeting-root .za-multi-option span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #zhipin-auto-greeting-root .za-blacklist-option {
+        justify-content: space-between;
+        cursor: default;
+      }
+      #zhipin-auto-greeting-root .za-blacklist-option-label {
+        min-width: 0;
+        flex: 1 1 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        cursor: pointer;
+      }
+      #zhipin-auto-greeting-root .za-blacklist-delete {
+        flex: 0 0 24px;
+        width: 24px;
+        min-height: 24px;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: var(--za-muted);
+        line-height: 1;
+      }
+      #zhipin-auto-greeting-root .za-blacklist-delete:hover {
+        color: #b91c1c;
+        background: #fee2e2;
+      }
       #zhipin-auto-greeting-root .za-boss-active-add {
+        margin-top: 8px;
+      }
+      #zhipin-auto-greeting-root .za-blacklist-actions {
         margin-top: 8px;
       }
       #zhipin-auto-greeting-root .za-option-chips {
