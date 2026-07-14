@@ -2565,7 +2565,7 @@
 
           <section class="za-section">
             <h3>数据清理</h3>
-            <label>删除此时间前的记录
+            <label class="za-cleanup-time">删除此时间前的记录
               <input data-field="clearBeforeTime" type="datetime-local">
             </label>
             <div class="za-inline">
@@ -7693,6 +7693,9 @@
       #zhipin-auto-greeting-root .za-danger-soft {
         border-color: #fecdca;
         color: var(--za-danger);
+      }
+      #zhipin-auto-greeting-root .za-cleanup-time {
+        margin-bottom: 8px;
       }
       #zhipin-auto-greeting-root .za-radio-row,
       #zhipin-auto-greeting-root .za-inline {
