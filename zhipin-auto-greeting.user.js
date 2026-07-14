@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BOSS直聘自动沟通助手
 // @namespace    local.codex.zhipin
-// @version      0.1.4
+// @version      0.1.5
 // @description  在 BOSS 直聘搜索结果页自动选择岗位、发送常用语或自定义问候语，并记录岗位数据。
 // @match        https://www.zhipin.com/web/geek/jobs*
 // @match        https://www.zhipin.com/web/geek/chat*
@@ -37,7 +37,7 @@
   // 全局常量：集中维护脚本版本、存储 key、BOSS 接口特征和默认问候语。
   const APP = {
     name: 'BOSS自动沟通',
-    version: '0.1.4',
+    version: '0.1.5',
     dbName: 'ZhipinAutoGreetingDB',
     dbVersion: 1,
     configKey: '__zhipin_auto_greeting_config__',
@@ -72,11 +72,25 @@
     '半年前活跃',
   ];
   const BOSS_ACTIVE_BUILTIN_KEYS = new Set(BOSS_ACTIVE_BUILTIN_OPTIONS.map((item) => normalizeBossActiveText(item)));
+  const FEATURE_BLOCK_DEFINITIONS = [
+    { id: 'greeting', title: '打招呼配置', defaultEnabled: true, readonly: true },
+    { id: 'strategy', title: '运行策略', defaultEnabled: true, readonly: true },
+    { id: 'companyFilter', title: '公司筛选', defaultEnabled: true },
+    { id: 'companyBlacklist', title: '公司黑名单', defaultEnabled: true },
+    { id: 'bossActive', title: 'Boss活跃度筛选', defaultEnabled: true },
+    { id: 'export', title: '数据导出', defaultEnabled: true },
+    { id: 'cleanup', title: '数据清理', defaultEnabled: true },
+    { id: 'debugLog', title: '调试日志', defaultEnabled: false },
+    { id: 'greetedList', title: '已沟通列表', defaultEnabled: true },
+  ];
+  const FEATURE_BLOCK_ID_SET = new Set(FEATURE_BLOCK_DEFINITIONS.map((item) => item.id));
 
   // 用户可在侧栏面板中修改的配置；保存到 localStorage 后会在下次打开页面时恢复。
   const DEFAULT_CONFIG = {
     // 面板和问候语来源。
     panelOpen: true,
+    featurePanelOpen: false,
+    featureBlocks: createDefaultFeatureBlocks(),
     greetingMode: 'fastReply',
     fastReplyIndex: 0,
     fastReplies: [],
@@ -217,8 +231,32 @@
       .map((item) => normalizeBossActiveText(item)));
     next.bossActiveFilterValues = normalizeBossActiveOptions(next.bossActiveFilterValues)
       .filter((item) => availableKeys.has(normalizeBossActiveText(item)));
+    next.featurePanelOpen = Boolean(next.featurePanelOpen);
+    next.featureBlocks = normalizeFeatureBlocks(next.featureBlocks);
 
     return next;
+  }
+
+  // 板块管理显示状态集中归一；只读板块始终开启，避免核心流程被隐藏到无法启动。
+  function normalizeFeatureBlocks(source) {
+    const raw = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+    return FEATURE_BLOCK_DEFINITIONS.reduce((output, item) => {
+      const defaultEnabled = item.readonly ? true : item.defaultEnabled !== false;
+      output[item.id] = item.readonly
+        ? true
+        : raw[item.id] === undefined
+          ? defaultEnabled
+          : Boolean(raw[item.id]);
+      return output;
+    }, {});
+  }
+
+  // 默认值需要返回新对象，避免后续合并配置时共享同一份引用。
+  function createDefaultFeatureBlocks() {
+    return FEATURE_BLOCK_DEFINITIONS.reduce((output, item) => {
+      output[item.id] = item.defaultEnabled !== false;
+      return output;
+    }, {});
   }
 
   // 公司匹配模式统一归一，避免旧配置或手动编辑的异常值影响过滤。
@@ -2395,16 +2433,29 @@
         <button class="za-toggle" type="button" title="显示/隐藏 BOSS自动沟通">沟通</button>
         <aside class="za-panel" aria-label="BOSS自动沟通控制台">
           <header class="za-header">
-            <div>
+            <div class="za-header-title">
               <strong>BOSS自动沟通</strong>
               <span class="za-subtitle">岗位问候自动化</span>
             </div>
-            <button class="za-icon-btn" type="button" data-action="toggle" title="收起">×</button>
+            <div class="za-header-actions">
+              <button class="za-feature-button" type="button" data-action="toggleFeaturePanel" aria-expanded="false" title="板块管理">
+                板块管理
+              </button>
+              <button class="za-icon-btn" type="button" data-action="toggle" title="收起">×</button>
+            </div>
           </header>
+
+          <div class="za-feature-panel" data-role="featurePanel" hidden>
+            <div class="za-feature-panel-head">
+              <strong>板块管理</strong>
+              <button class="za-feature-panel-close" type="button" data-action="closeFeaturePanel" title="关闭板块管理" aria-label="关闭板块管理">×</button>
+            </div>
+            <div class="za-feature-list" data-role="featureBlockList"></div>
+          </div>
 
           <div class="za-status" data-role="status">等待启动</div>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="greeting">
             <h3>打招呼配置</h3>
             <div class="za-radio-row">
               <label><input type="radio" name="za-greeting-mode" value="fastReply"> 常用语</label>
@@ -2483,7 +2534,7 @@
             </div>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="strategy">
             <h3>运行策略</h3>
             <label class="za-check"><input data-field="skipContacted" type="checkbox"> 跳过已沟通 HR</label>
             <label class="za-check"><input data-field="collectGreetedJobs" type="checkbox"> 收集已打招呼岗位信息</label>
@@ -2497,7 +2548,7 @@
             </div>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="companyFilter">
             <h3>公司筛选</h3>
             <div class="za-inline">
               <select data-field="companyFilterMode">
@@ -2509,7 +2560,7 @@
             </div>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="companyBlacklist">
             <h3>公司黑名单</h3>
             <div class="za-inline">
               <select data-field="companyBlacklistMode">
@@ -2534,7 +2585,7 @@
             <p class="za-hint">任意黑名单命中都会在沟通前跳过该公司。</p>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="bossActive">
             <h3>Boss活跃度筛选</h3>
             <div class="za-selected-area" data-role="bossActiveSelectedList"></div>
             <div class="za-multi-dropdown" data-role="bossActiveDropdown">
@@ -2552,7 +2603,7 @@
             <p class="za-hint">不选择代表不过滤；内置选项固定，自定义选项可删除。</p>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="export">
             <h3>数据导出</h3>
             <div class="za-inline">
               <select data-field="exportType">
@@ -2563,7 +2614,7 @@
             </div>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="cleanup">
             <h3>数据清理</h3>
             <label class="za-cleanup-time">删除此时间前的记录
               <input data-field="clearBeforeTime" type="datetime-local">
@@ -2575,7 +2626,7 @@
             <p class="za-hint">按时间删除会使用发送时间，未发送记录使用点击或更新时间。</p>
           </section>
 
-          <section class="za-section">
+          <section class="za-section" data-feature-section="debugLog">
             <h3>调试日志</h3>
             <label class="za-check"><input data-role="debugLogEnabled" type="checkbox"> 记录诊断日志</label>
             <div class="za-inline">
@@ -2585,7 +2636,7 @@
             <p class="za-hint" data-role="debugLogStatus">日志 0 条</p>
           </section>
 
-          <section class="za-section za-list-section">
+          <section class="za-section za-list-section" data-feature-section="greetedList">
             <h3>已沟通列表</h3>
             <div class="za-list-viewport" data-role="listViewport">
               <div class="za-list-spacer" data-role="listSpacer"></div>
@@ -2606,6 +2657,9 @@
         panel: root.querySelector('.za-panel'),
         toggle: root.querySelector('.za-toggle'),
         status: root.querySelector('[data-role="status"]'),
+        featurePanel: root.querySelector('[data-role="featurePanel"]'),
+        featureButton: root.querySelector('[data-action="toggleFeaturePanel"]'),
+        featureBlockList: root.querySelector('[data-role="featureBlockList"]'),
         fastReplyInput: root.querySelector('[data-field="fastReplyIndex"]'),
         fastReplyTrigger: root.querySelector('[data-action="toggleFastReplyPicker"]'),
         fastReplyTriggerText: root.querySelector('[data-role="fastReplyTriggerText"]'),
@@ -2637,12 +2691,14 @@
       };
 
       this.prepareConfigFields();
+      this.renderFeatureBlockControls();
       this.bindEvents();
       this.applyConfigToForm();
       this.renderDebugLogControls();
       this.renderFastReplyOptions();
       this.renderCompanyBlacklistRules();
       this.renderBossActiveFilterOptions();
+      this.setFeaturePanelOpen(config.featurePanelOpen);
       this.setPanelOpen(config.panelOpen);
       this.scheduleConfigReapply();
       this.refreshGreetedList();
@@ -2701,7 +2757,23 @@
         if (!target) return;
 
         const action = target.dataset.action || 'toggle';
+        if (action === 'toggleFeaturePanel') {
+          this.setFastReplyPickerOpen(false);
+          this.setBossActiveDropdownOpen(false);
+          this.setCompanyBlacklistDropdownOpen(false);
+          this.setFeaturePanelOpen(!this.isFeaturePanelOpen());
+          return;
+        }
+        if (action === 'closeFeaturePanel') {
+          this.setFeaturePanelOpen(false);
+          return;
+        }
+        if (action === 'toggleFeatureBlock') {
+          this.toggleFeatureBlock(target.dataset.featureId);
+          return;
+        }
         if (action === 'toggleFastReplyPicker') {
+          this.setFeaturePanelOpen(false);
           this.setBossActiveDropdownOpen(false);
           this.setCompanyBlacklistDropdownOpen(false);
           this.setFastReplyPickerOpen(!this.isFastReplyPickerOpen());
@@ -2720,12 +2792,14 @@
           return;
         }
         if (action === 'toggleBossActiveDropdown') {
+          this.setFeaturePanelOpen(false);
           this.setFastReplyPickerOpen(false);
           this.setCompanyBlacklistDropdownOpen(false);
           this.setBossActiveDropdownOpen(!this.isBossActiveDropdownOpen());
           return;
         }
         if (action === 'toggleCompanyBlacklistDropdown') {
+          this.setFeaturePanelOpen(false);
           this.setFastReplyPickerOpen(false);
           this.setBossActiveDropdownOpen(false);
           this.setCompanyBlacklistDropdownOpen(!this.isCompanyBlacklistDropdownOpen());
@@ -2788,6 +2862,12 @@
       });
 
       root.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && this.isFeaturePanelOpen()) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.setFeaturePanelOpen(false);
+          return;
+        }
         if (event.key === 'Escape' && this.isFastReplyPickerOpen()) {
           event.preventDefault();
           event.stopPropagation();
@@ -2831,6 +2911,10 @@
 
       pageWindow.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape') return;
+        if (this.isFeaturePanelOpen()) {
+          this.setFeaturePanelOpen(false);
+          return;
+        }
         if (this.isFastReplyPickerOpen()) {
           this.setFastReplyPickerOpen(false);
           return;
@@ -2847,7 +2931,8 @@
       });
 
       pageWindow.addEventListener('click', (event) => {
-        if (!runtime.ui || !runtime.ui.root || runtime.ui.root.contains(event.target)) return;
+        if (!runtime.ui || !runtime.ui.root || this.isEventFromUiRoot(event)) return;
+        this.setFeaturePanelOpen(false);
         this.setFastReplyPickerOpen(false);
         this.setCompanyBlacklistDropdownOpen(false);
         this.setBossActiveDropdownOpen(false);
@@ -2889,6 +2974,15 @@
       return field && root.contains(field) ? field : null;
     },
 
+    // 判断事件是否起源于脚本 UI。composedPath 可覆盖点击后 DOM 被重绘移除的场景。
+    isEventFromUiRoot(event) {
+      const root = runtime.ui && runtime.ui.root;
+      if (!root || !event) return false;
+      const path = typeof event.composedPath === 'function' ? event.composedPath() : null;
+      if (path && path.includes(root)) return true;
+      return Boolean(event.target && root.contains(event.target));
+    },
+
     // 判断事件目标是否是问候模式/文本来源的单选项。
     isModeInput(target) {
       return Boolean(target && target.matches && target.matches('input[name="za-greeting-mode"], input[name="za-text-source"]'));
@@ -2919,9 +3013,80 @@
       this.setConfigFieldValue(field, config[key]);
     },
 
+    // 判断板块管理选择区是否展开。
+    isFeaturePanelOpen() {
+      return Boolean(runtime.ui && runtime.ui.featurePanel && !runtime.ui.featurePanel.hidden);
+    },
+
+    // 展开/收起板块管理选择区；展开状态持久化，方便刷新后保持用户的工作上下文。
+    setFeaturePanelOpen(open) {
+      if (!runtime.ui || !runtime.ui.featurePanel) return;
+      saveConfig({ featurePanelOpen: Boolean(open) });
+      runtime.ui.featurePanel.hidden = !config.featurePanelOpen;
+      runtime.ui.root.classList.toggle('za-feature-open', config.featurePanelOpen);
+      if (runtime.ui.featureButton) {
+        runtime.ui.featureButton.setAttribute('aria-expanded', config.featurePanelOpen ? 'true' : 'false');
+      }
+    },
+
+    // 根据板块元数据渲染开关按钮；新增板块只需要补 FEATURE_BLOCK_DEFINITIONS。
+    renderFeatureBlockControls() {
+      if (!runtime.ui || !runtime.ui.featureBlockList) return;
+
+      const blocks = normalizeFeatureBlocks(config.featureBlocks);
+      runtime.ui.featureBlockList.innerHTML = FEATURE_BLOCK_DEFINITIONS.map((item) => {
+        const enabled = blocks[item.id];
+        const enabledClass = enabled ? ' za-enabled' : '';
+        const readonlyClass = item.readonly ? ' za-readonly' : '';
+        const stateText = item.readonly ? '固定' : enabled ? '开启' : '关闭';
+        const disabled = item.readonly ? ' disabled' : '';
+        const title = item.readonly
+          ? `${item.title}固定开启`
+          : `${enabled ? '关闭' : '开启'}${item.title}`;
+        return `
+          <button type="button" class="za-feature-switch${enabledClass}${readonlyClass}" data-action="toggleFeatureBlock" data-feature-id="${escapeHtml(item.id)}" aria-pressed="${enabled ? 'true' : 'false'}" title="${escapeHtml(title)}"${disabled}>
+            <span>${escapeHtml(item.title)}</span>
+            <span class="za-feature-state">${escapeHtml(stateText)}</span>
+          </button>
+        `;
+      }).join('');
+    },
+
+    // 切换单个板块的显示状态，只读板块不允许关闭。
+    toggleFeatureBlock(featureId) {
+      const id = normalizeText(featureId);
+      if (!FEATURE_BLOCK_ID_SET.has(id)) return;
+
+      const definition = FEATURE_BLOCK_DEFINITIONS.find((item) => item.id === id);
+      if (!definition || definition.readonly) return;
+
+      const nextBlocks = normalizeFeatureBlocks(config.featureBlocks);
+      nextBlocks[id] = !nextBlocks[id];
+      saveConfig({ featureBlocks: nextBlocks });
+      this.renderFeatureBlockControls();
+      this.applyFeatureBlockVisibility();
+    },
+
+    // 把板块管理开关应用到实际 section；隐藏只影响面板展示，不清空已有配置。
+    applyFeatureBlockVisibility() {
+      if (!runtime.ui || !runtime.ui.root) return;
+
+      const blocks = normalizeFeatureBlocks(config.featureBlocks);
+      runtime.ui.root.querySelectorAll('[data-feature-section]').forEach((section) => {
+        const id = section.dataset.featureSection;
+        section.hidden = !blocks[id];
+      });
+
+      if (!blocks.companyBlacklist) this.setCompanyBlacklistDropdownOpen(false);
+      if (!blocks.bossActive) this.setBossActiveDropdownOpen(false);
+    },
+
     // 展开/收起面板并持久化到配置。
     setPanelOpen(open) {
-      if (!open) this.setFastReplyPickerOpen(false);
+      if (!open) {
+        this.setFeaturePanelOpen(false);
+        this.setFastReplyPickerOpen(false);
+      }
       saveConfig({ panelOpen: Boolean(open) });
       runtime.ui.root.classList.toggle('za-open', config.panelOpen);
     },
@@ -2945,6 +3110,8 @@
       }
 
       this.applyModeVisibility();
+      this.renderFeatureBlockControls();
+      this.applyFeatureBlockVisibility();
       this.renderDebugLogControls();
       this.renderCompanyBlacklistRules();
       this.renderBossActiveFilterOptions();
@@ -7562,6 +7729,22 @@
         background: var(--za-bg);
         box-shadow: 0 1px 0 rgba(215, 221, 231, 0.85);
       }
+      #zhipin-auto-greeting-root .za-header-title {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      #zhipin-auto-greeting-root .za-header-title strong,
+      #zhipin-auto-greeting-root .za-header-title span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #zhipin-auto-greeting-root .za-header-actions {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
       #zhipin-auto-greeting-root .za-footer {
         border-top: 1px solid var(--za-border);
         border-bottom: 0;
@@ -7584,6 +7767,84 @@
         cursor: pointer;
         font-size: 18px;
         line-height: 1;
+      }
+      #zhipin-auto-greeting-root .za-feature-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 86px;
+        padding: 0 8px;
+      }
+      #zhipin-auto-greeting-root .za-feature-panel {
+        position: fixed;
+        top: 58px;
+        right: 14px;
+        z-index: 4;
+        width: calc(var(--za-width) - 28px);
+        max-width: calc(100vw - 52px);
+        padding: 10px;
+        border: 1px solid var(--za-border);
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+      }
+      #zhipin-auto-greeting-root .za-feature-panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      #zhipin-auto-greeting-root .za-feature-panel-close {
+        width: 26px;
+        min-height: 26px;
+        padding: 0;
+        border-radius: 6px;
+        background: #fff;
+        color: var(--za-muted);
+        font-size: 18px;
+        line-height: 1;
+      }
+      #zhipin-auto-greeting-root .za-feature-list {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      #zhipin-auto-greeting-root .za-feature-switch {
+        width: 100%;
+        min-width: 0;
+        height: auto;
+        min-height: 38px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 8px;
+        background: #fff;
+        text-align: left;
+        white-space: normal;
+      }
+      #zhipin-auto-greeting-root .za-feature-switch > span:first-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #zhipin-auto-greeting-root .za-feature-switch.za-enabled {
+        border-color: #b7e4e5;
+        background: #ecfeff;
+        color: #007f80;
+      }
+      #zhipin-auto-greeting-root .za-feature-switch.za-readonly {
+        border-style: dashed;
+      }
+      #zhipin-auto-greeting-root .za-feature-state {
+        flex: 0 0 auto;
+        color: var(--za-muted);
+        font-size: 12px;
+      }
+      #zhipin-auto-greeting-root .za-feature-switch.za-enabled .za-feature-state {
+        color: #007f80;
       }
       #zhipin-auto-greeting-root .za-status {
         flex: 0 0 auto;
