@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BOSS直聘自动沟通助手
 // @namespace    local.codex.zhipin
-// @version      0.1.6
+// @version      0.1.7
 // @description  在 BOSS 直聘搜索结果页自动选择岗位、发送常用语或自定义问候语，并记录岗位数据。
 // @match        https://www.zhipin.com/web/geek/jobs*
 // @match        https://www.zhipin.com/web/geek/chat*
@@ -37,7 +37,7 @@
   // 全局常量：集中维护脚本版本、存储 key、BOSS 接口特征和默认问候语。
   const APP = {
     name: 'BOSS自动沟通',
-    version: '0.1.6',
+    version: '0.1.7',
     dbName: 'ZhipinAutoGreetingDB',
     dbVersion: 1,
     configKey: '__zhipin_auto_greeting_config__',
@@ -146,6 +146,10 @@
     latestJobListResponse: null,
     latestFirstPageJobListResponse: null,
     latestJobListRequest: null,
+    // Resource Timing 兜底状态：记录真正完成的列表请求，解决 BOSS 缓存原生 fetch/XHR 后拦截器失效的问题。
+    latestJobListResource: null,
+    jobListResourceSerial: 0,
+    jobListResourceObserver: null,
     initialPageUrl: location.href,
     latestRouteUrl: location.href,
     debugEvents: [],
@@ -777,12 +781,16 @@
       latestJobListResponse: runtime.latestJobListResponse,
       latestFirstPageJobListResponse: runtime.latestFirstPageJobListResponse,
       latestJobListRequest: summarizeJobListRequest(runtime.latestJobListRequest),
+      latestJobListResource: runtime.latestJobListResource,
+      jobListResourceSerial: runtime.jobListResourceSerial,
       visibleCardCount: getJobCards().length,
     };
   }
 
   // 捕获岗位列表/详情接口响应，用接口数据补强 DOM 卡片信息，提升岗位匹配和记录质量。
   function installNetworkInterceptors() {
+    // ResourceObserver 独立于 fetch/XHR 包装器，必须同时安装才能覆盖页面预缓存原生方法的情况。
+    installJobListResourceObserver();
     const rawFetch = pageWindow.fetch;
 
     if (typeof rawFetch === 'function' && !rawFetch.__zhipinAutoGreetingPatched) {
@@ -880,6 +888,7 @@
     }
   }
 
+  // 把 fetch 的 Request/init 合并为可记录、可重放的统一请求元数据。
   function createFetchRequestMeta(input, init, url) {
     const request = input && typeof input === 'object' ? input : {};
     const requestInit = init || {};
@@ -892,6 +901,7 @@
     };
   }
 
+  // 从 XHR 实例上读取 open/setRequestHeader 阶段保存的信息，生成统一请求元数据。
   function createXhrRequestMeta(xhr, body, url) {
     return {
       url,
@@ -902,11 +912,64 @@
     };
   }
 
+  // 只保存岗位列表接口的最近发起记录；详情接口不参与求职期望列表恢复判断。
   function rememberTrackedJobRequest(url, requestMeta) {
     if (!APP.jobListApiPattern.test(url) || !requestMeta) return;
-    runtime.latestJobListRequest = requestMeta;
+    runtime.latestJobListRequest = Object.assign({}, requestMeta, { capturedAt: Date.now() });
   }
 
+  // BOSS 可能缓存脚本注入前的 fetch/XHR，导致包装器抓不到请求；Resource Timing 用于记录接口确已完成。
+  function installJobListResourceObserver() {
+    try {
+      if (typeof performance !== 'undefined' && typeof performance.setResourceTimingBufferSize === 'function') {
+        performance.setResourceTimingBufferSize(2000);
+      }
+      if (runtime.jobListResourceObserver || typeof PerformanceObserver !== 'function') return;
+
+      const observer = new PerformanceObserver((entryList) => {
+        entryList.getEntries().forEach((entry) => {
+          if (!entry || !APP.jobListApiPattern.test(entry.name)) return;
+          noteCompletedJobListResource(entry.name, getResourceEntryCompletedAt(entry), 'performance-observer');
+        });
+      });
+      observer.observe({ type: 'resource', buffered: true });
+      runtime.jobListResourceObserver = observer;
+    } catch (error) {
+      logDebugEvent('job_list_resource_observer_failed', {
+        message: error && error.message || String(error),
+      }, 'warn');
+    }
+  }
+
+  // PerformanceEntry 使用相对 timeOrigin 的毫秒值，这里换算成可与 Date.now() 比较的绝对时间。
+  function getResourceEntryCompletedAt(entry) {
+    const timeOrigin = Number(performance && performance.timeOrigin || Date.now());
+    const responseEnd = Number(entry && entry.responseEnd || entry && entry.startTime || 0);
+    return Math.round(timeOrigin + responseEnd);
+  }
+
+  // 按完成时间更新“最后完成的列表请求”，避免较早请求的延迟观察回调覆盖较新的结果。
+  function noteCompletedJobListResource(url, completedAt, source) {
+    if (!APP.jobListApiPattern.test(url)) return null;
+    const capturedAt = Number(completedAt || Date.now());
+    const previous = runtime.latestJobListResource;
+    if (previous && Number(previous.capturedAt || 0) > capturedAt) return previous;
+
+    const record = {
+      url,
+      source: source || 'resource',
+      capturedAt,
+      pageNumber: getJobListPageNumber(url),
+      contextKey: makeJobListContextKey(url),
+      serial: runtime.jobListResourceSerial + 1,
+    };
+    runtime.jobListResourceSerial = record.serial;
+    runtime.latestJobListResource = record;
+    logDebugEvent('job_list_resource_completed', record);
+    return record;
+  }
+
+  // 合并 Request 与 init 中可能重复的请求头，后传入者覆盖同名项。
   function mergeHeadersToObject() {
     const output = {};
     Array.from(arguments).forEach((headers) => {
@@ -917,6 +980,7 @@
     return output;
   }
 
+  // 兼容 Headers、键值数组和普通对象三种浏览器请求头形态。
   function headersToObject(headers) {
     if (!headers) return [];
     try {
@@ -935,6 +999,7 @@
     return [];
   }
 
+  // 调试日志只保存请求摘要，不直接展开请求体，避免日志过大或泄露完整业务数据。
   function summarizeJobListRequest(requestMeta) {
     if (!requestMeta) return null;
     return {
@@ -947,6 +1012,7 @@
     };
   }
 
+  // 获取请求体的可读类型名称，用于判断一次列表请求是否具备重放条件。
   function getBodyType(body) {
     if (body === undefined || body === null) return '';
     try {
@@ -957,7 +1023,12 @@
     }
   }
 
+  // 选择安全的列表重放来源：已完成请求优先，其次才是最近发起记录和 performance 缓冲区。
   function getLatestReplayableJobListRequest() {
+    // 优先重放最近一次“已完成”的请求。并发切换标签时，最近发出的请求可能仍未完成，
+    // 如果直接取它就可能把刚恢复好的求职期望再次覆盖成推荐。
+    const completed = getLatestCompletedJobListRecord();
+    if (isReplayableJobListRequest(completed)) return completed;
     if (isReplayableJobListRequest(runtime.latestJobListRequest)) return runtime.latestJobListRequest;
 
     const latestUrl = findLatestJobListApiUrl();
@@ -971,6 +1042,7 @@
     return isReplayableJobListRequest(fallback) ? fallback : null;
   }
 
+  // 只有携带有效筛选参数（或非 GET 请求体）的请求才允许重放，避免误拉无上下文的推荐列表。
   function isReplayableJobListRequest(requestMeta) {
     if (!requestMeta || !requestMeta.url) return false;
 
@@ -982,6 +1054,7 @@
     return hasMeaningfulJobListUrlParams(requestMeta.url);
   }
 
+  // 排除时间戳、页码等波动字段后，确认 URL 中仍存在城市/求职期望等业务筛选参数。
   function hasMeaningfulJobListUrlParams(url) {
     try {
       const target = new URL(url, location.href);
@@ -995,6 +1068,7 @@
     }
   }
 
+  // 根据捕获元数据还原 fetch 配置；GET/HEAD 不携带 body，避免浏览器直接抛出异常。
   function buildJobListFetchInit(requestMeta) {
     const method = normalizeText(requestMeta && requestMeta.method || 'GET').toUpperCase() || 'GET';
     const headers = Object.assign({ Accept: 'application/json, text/plain, */*' }, requestMeta && requestMeta.headers || {});
@@ -2031,10 +2105,14 @@
       return false;
     },
 
-    // 根据 performance 记录中的最近列表 URL 主动补抓岗位列表，作为网络拦截失败兜底。
-    async fetchLatestJobList() {
+    // 主动补抓岗位列表：恢复求职期望时可指定已确认 URL，其它场景则从最近完成记录中安全选择。
+    async fetchLatestJobList(requestOverride) {
       const fetcher = nativePageFetch || (typeof pageWindow.fetch === 'function' && pageWindow.fetch.bind(pageWindow));
-      const request = getLatestReplayableJobListRequest();
+      // 字符串覆盖值按 GET 请求处理；对象覆盖值可保留原方法、请求头和请求体。
+      const override = typeof requestOverride === 'string'
+        ? { url: requestOverride, method: 'GET', headers: {}, source: 'explicit-replay' }
+        : requestOverride;
+      const request = isReplayableJobListRequest(override) ? override : getLatestReplayableJobListRequest();
       if (!request || !fetcher) {
         logDebugEvent('job_list_active_fetch_skipped', {
           reason: !fetcher ? 'missing_fetcher' : 'missing_replayable_request',
@@ -4015,6 +4093,8 @@
       const startIndex = findSelectedCardIndex();
       const listUrl = getRestorableListUrl(location.href) || location.href;
       const listPosition = captureJobListPosition();
+      // 同时冻结 active 标签和接口参数；仅保存列表 URL 无法区分“推荐”和具体求职期望。
+      const listExpectationContext = captureActiveJobExpectationContext();
       // 一轮运行锁定同一个筛选 URL；先回扫顶部，再用岗位标识从上到下累计处理虚拟列表。
       RunState.save({
         active: true,
@@ -4033,6 +4113,8 @@
         chatButtonText: '',
         listUrl,
         listFilterSignature: makeJobListFilterSignature(listUrl),
+        // BOSS 不会把“推荐/求职期望”标签写入 URL；单独冻结当前标签，返回列表后必须先恢复它。
+        listExpectationContext,
         listScrollTop: listPosition.listScrollTop,
         listAnchorKey: listPosition.listAnchorKey,
         intentionalListRestoreAt: null,
@@ -4126,6 +4208,8 @@
       try {
         // 列表页先等 DOM 卡片和接口数据都就绪，DOM 负责点击，接口数据负责准确记录岗位字段。
         await waitForElement('li.job-card-box', getWaitTimeout(), '岗位列表');
+        // 每次进入/恢复列表循环都复核冻结的求职期望，不能只依赖启动时的 active 类。
+        await ensureFrozenJobExpectationContext(RunState.load(), 'list-loop');
         await JobRepository.waitForApiData(1800);
         JobRepository.syncCards();
 
@@ -4296,25 +4380,29 @@
       const detailResourceStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       // 先点岗位卡片让右侧详情刷新，再从详情接口/DOM 里补充岗位信息。
       clickElement(card);
-      await sleep(700);
+      await sleep(250);
 
-      const chatButton = await waitFor(() => findChatButton(job), getWaitTimeout(), '当前岗位沟通按钮');
-      const buttonText = normalizeText(chatButton.innerText || chatButton.textContent || '');
-      logDebugEvent('chat_button_found', {
-        cursorIndex,
-        buttonText,
-        buttonHref: chatButton.getAttribute('href'),
-        buttonKa: chatButton.getAttribute('ka'),
-        job: summarizeJobForDebug(job),
-      });
       const apiDetail = await JobRepository.waitForJobDetail(
         job,
         Math.min(3200, getWaitTimeout() * 1000),
         detailResourceStartedAt,
         { includeHtml: false, forceApiFetch: true },
       );
-      const domDetail = extractDetailInfo();
-      job = mergeJobInfo(job, apiDetail || domDetail);
+      if (apiDetail) job = mergeJobInfo(job, apiDetail);
+      // 接口详情先补全岗位 ID，再等待右侧标题和对应沟通按钮稳定，防止误点上一张卡片的残留按钮。
+      const detailReady = await waitForJobCommunicationDetail(job, getWaitTimeout() * 1000);
+      const chatButton = detailReady.chatButton;
+      const domDetail = detailReady.detail;
+      const buttonText = normalizeText(chatButton.innerText || chatButton.textContent || '');
+      logDebugEvent('chat_button_found', {
+        cursorIndex,
+        buttonText,
+        buttonHref: chatButton.getAttribute('href'),
+        buttonKa: chatButton.getAttribute('ka'),
+        detailJobName: domDetail.jobName,
+        job: summarizeJobForDebug(job),
+      });
+      job = mergeJobInfo(job, domDetail);
       if (apiDetail && !getDisplayBossActiveTime(job) && domDetail.bossActiveTimeDesc) {
         job = mergeJobInfo(job, {
           bossActiveTimeDesc: domDetail.bossActiveTimeDesc,
@@ -4577,6 +4665,7 @@
 
       await navigateToJobList(state);
       await waitForVisibleJobList(Math.max(3000, getWaitTimeout() * 1000));
+      await ensureFrozenJobExpectationContext(state, 'chat-open-retry');
       await restoreJobListPosition(state);
       await JobRepository.waitForApiData(Math.min(1800, getWaitTimeout() * 1000));
       const cards = JobRepository.syncCards();
@@ -4602,24 +4691,28 @@
       card.scrollIntoView({ block: 'center', inline: 'nearest' });
       const detailResourceStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       clickElement(card);
-      await sleep(700);
+      await sleep(250);
 
-      const chatButton = await waitFor(() => findChatButton(pendingJob), getWaitTimeout(), '当前岗位沟通按钮');
-      const buttonText = normalizeText(chatButton.innerText || chatButton.textContent || '');
-      logDebugEvent('chat_open_retry_button_found', {
-        attempt,
-        buttonText,
-        buttonHref: chatButton.getAttribute('href'),
-        buttonKa: chatButton.getAttribute('ka'),
-        pendingJob: summarizeJobForDebug(pendingJob),
-      });
       const apiDetail = await JobRepository.waitForJobDetail(
         pendingJob,
         Math.min(8000, Math.max(4500, getWaitTimeout() * 1000)),
         detailResourceStartedAt,
         { includeHtml: true, forceApiFetch: true },
       );
-      const refreshedJob = mergeJobInfo(pendingJob, apiDetail || extractDetailInfo());
+      let refreshedJob = mergeJobInfo(pendingJob, apiDetail);
+      // 重试同样执行详情/按钮一致性校验，不能因为是第二次点击就复用可能过期的 DOM。
+      const detailReady = await waitForJobCommunicationDetail(refreshedJob, getWaitTimeout() * 1000);
+      const chatButton = detailReady.chatButton;
+      const buttonText = normalizeText(chatButton.innerText || chatButton.textContent || '');
+      refreshedJob = mergeJobInfo(refreshedJob, detailReady.detail);
+      logDebugEvent('chat_open_retry_button_found', {
+        attempt,
+        buttonText,
+        buttonHref: chatButton.getAttribute('href'),
+        buttonKa: chatButton.getAttribute('ka'),
+        detailJobName: detailReady.detail.jobName,
+        pendingJob: summarizeJobForDebug(pendingJob),
+      });
 
       RunState.patch({
         active: true,
@@ -4665,12 +4758,16 @@
 
       RunState.patch({ phase: 'returning', returnAttempts: attempts + 1, returnStartedAt });
       const navigationResult = await navigateToJobList(currentState);
+      // 短暂观察返回后是否发生第一页刷新，供后续扫描游标和刷新策略判断。
       await waitForReturnedJobListRefresh(returnStartedAt);
+      // 恢复滚动位置之前先恢复求职期望，避免在“推荐”列表上按旧岗位锚点继续扫描。
+      const expectationResult = await ensureFrozenJobExpectationContext(currentState, 'returning');
       await restoreJobListPosition(RunState.load() || currentState);
       logDebugEvent('complete_return_list_visible', {
         reason,
         attempts: attempts + 1,
         navigationResult,
+        expectationResult,
         listState: getDebugListState(),
         snapshot: createJobListSnapshot(),
       });
@@ -4686,11 +4783,12 @@
         intentionalRestore,
         ignoreListRefresh: Boolean(config.ignoreListRefresh),
         navigationResult,
+        expectationResult,
       }, refreshDecision.refreshed ? 'warn' : 'info');
       let cursorIndex = Number(latestState.cursorIndex || currentState.cursorIndex || 0);
 
-      // 主动恢复固定筛选 URL 仍可能触发列表刷新；是否继续必须交给“无视列表刷新”开关决定。
-      if (refreshDecision.refreshed) {
+      // 主动恢复求职期望产生的刷新是受控行为；其它列表刷新仍交给“无视列表刷新”开关决定。
+      if (refreshDecision.refreshed && !expectationResult.restored) {
         if (!config.ignoreListRefresh) {
           this.pause('岗位列表已刷新，脚本已暂停；请确认当前列表后重新启动');
           return;
@@ -4701,6 +4799,8 @@
         await sleep(300);
         JobRepository.syncCards();
         UI.setStatus('检测到岗位列表刷新，已保留已处理岗位并从顶部继续', 'warn');
+      } else if (expectationResult.restored) {
+        UI.setStatus(`已恢复求职期望：${expectationResult.label || '原选择'}`, 'ok');
       } else if (intentionalRestore) {
         UI.setStatus('已恢复原岗位筛选页面和扫描进度', 'ok');
       }
@@ -5660,12 +5760,23 @@
 
   // 从 performance 资源记录里找最近一次列表接口，主动补抓时使用。
   function findLatestJobListApiUrl() {
-    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return '';
+    const resource = findLatestJobListApiResource();
+    return resource && resource.url || '';
+  }
+
+  // 返回最近列表资源的 URL 和完成时间；对象形式便于与 fetch/XHR 捕获记录按时间统一排序。
+  function findLatestJobListApiResource() {
+    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') return null;
 
     const entries = performance.getEntriesByType('resource')
       .filter((entry) => APP.jobListApiPattern.test(entry.name))
       .sort((a, b) => b.startTime - a.startTime);
-    return entries.length ? entries[0].name : '';
+    if (!entries.length) return null;
+    return {
+      url: entries[0].name,
+      capturedAt: getResourceEntryCompletedAt(entries[0]),
+      source: 'performance-buffer',
+    };
   }
 
   // 从 performance 资源记录里找点击岗位后出现的详情接口。
@@ -6074,6 +6185,47 @@
     return merged;
   }
 
+  // 岗位卡片切换后，必须确认右侧详情标题和沟通按钮都属于目标岗位，避免误点上一条残留详情。
+  function getJobCommunicationDetailReady(job) {
+    const detail = extractDetailInfo();
+    if (!detail || !detail.jobName || !areComparableTextsCompatible(job && job.jobName, detail.jobName)) return null;
+    const chatButton = findChatButton(job);
+    if (!chatButton) return null;
+    return { detail, chatButton };
+  }
+
+  // 要求“详情标题 + 公司 + 按钮身份”持续稳定一段时间，吸收 SPA 中旧详情响应晚到造成的瞬时回写。
+  function waitForJobCommunicationDetail(job, timeout, settleMs) {
+    const stableDuration = Math.max(0, Number(settleMs === undefined ? 300 : settleMs));
+    let stableSince = 0;
+    let stableIdentity = '';
+    return waitFor(
+      () => {
+        const ready = getJobCommunicationDetailReady(job);
+        if (!ready) {
+          stableSince = 0;
+          stableIdentity = '';
+          return null;
+        }
+
+        // 任一可识别字段发生变化都重新计时，只有整个详情组合稳定后才允许沟通。
+        const identity = [
+          normalizeText(ready.detail && ready.detail.jobName),
+          normalizeText(ready.detail && ready.detail.company),
+          normalizeText(ready.chatButton && ready.chatButton.getAttribute('ka')),
+          normalizeText(ready.chatButton && ready.chatButton.getAttribute('href')),
+        ].join('|');
+        if (identity !== stableIdentity) {
+          stableIdentity = identity;
+          stableSince = Date.now();
+        }
+        return Date.now() - stableSince >= stableDuration ? ready : null;
+      },
+      Math.max(2000, Number(timeout || getWaitTimeout() * 1000)),
+      '当前岗位详情与沟通按钮',
+    );
+  }
+
   // 在岗位详情页查找“立即沟通/继续沟通”按钮，点击它会进入聊天页。
   function findChatButton(job) {
     const candidates = Array.from(document.querySelectorAll('a.op-btn.op-btn-chat'))
@@ -6399,6 +6551,383 @@
   function inputContainsText(input, expectedText) {
     const token = getMessageVerifyToken(expectedText);
     return token && normalizeText(getEditableText(input)).includes(token);
+  }
+
+  // 从最近一次列表请求提取“推荐/求职期望”相关参数。BOSS 不把这些参数同步到页面 URL。
+  function parseJobExpectationRequestContext(url) {
+    const context = {
+      encryptExpectId: '',
+      mixExpectType: '',
+      expectInfo: '',
+      jobType: '',
+    };
+
+    try {
+      const target = new URL(url || '', location.href);
+      Object.keys(context).forEach((key) => {
+        context[key] = normalizeText(target.searchParams.get(key));
+      });
+    } catch (_) {}
+
+    return context;
+  }
+
+  // 汇总“已发起/已解析/Resource Timing”三路记录，返回时间上最新的一次列表活动。
+  function getLatestJobListRequestRecord() {
+    const bufferedResource = findLatestJobListApiResource();
+    const candidates = [
+      runtime.latestJobListRequest,
+      runtime.latestFirstPageJobListResponse,
+      runtime.latestJobListResource,
+      bufferedResource,
+    ].filter((item) => item && item.url);
+    candidates.sort((left, right) => Number(right.capturedAt || 0) - Number(left.capturedAt || 0));
+    return candidates[0] || null;
+  }
+
+  // 只在已完成的响应和资源中选择，避免把尚未返回的推荐请求误当成当前最终列表。
+  function getLatestCompletedJobListRecord() {
+    const bufferedResource = findLatestJobListApiResource();
+    const candidates = [
+      runtime.latestFirstPageJobListResponse,
+      runtime.latestJobListResource,
+      bufferedResource,
+    ].filter((item) => item && item.url);
+    candidates.sort((left, right) => Number(right.capturedAt || 0) - Number(left.capturedAt || 0));
+    return candidates[0] || null;
+  }
+
+  // 获取最近列表活动的 URL，供求职期望参数解析和异常日志使用。
+  function getLatestJobListRequestUrl() {
+    const record = getLatestJobListRequestRecord();
+    return normalizeText(record && record.url);
+  }
+
+  // 冻结当前激活的求职期望。标签状态只存在于 BOSS 的 Vue 组件内，刷新/重挂载后会默认回到“推荐”。
+  function captureActiveJobExpectationContext() {
+    const root = document.querySelector('.c-expect-select');
+    if (!root) return null;
+
+    const active = root.querySelector([
+      'a.synthesis.active',
+      'a.expect-item.active',
+      '.part-time-expect.active',
+      '.temp-expect.active',
+    ].join(','));
+    const component = root.__vue__ || null;
+    const requestContext = parseJobExpectationRequestContext(getLatestJobListRequestUrl());
+    let mode = normalizeText(component && component.currentJobTab);
+
+    if (!mode && active) {
+      if (active.matches('a.synthesis')) mode = 'select';
+      else if (active.matches('.part-time-expect')) mode = 'partTime';
+      else if (active.matches('.temp-expect')) mode = 'temp-expect';
+      else if (active.matches('a.expect-item')) mode = 'expect';
+    }
+    if (!mode) return null;
+
+    let encryptExpectId = requestContext.encryptExpectId;
+    if (mode === 'expect') {
+      encryptExpectId = normalizeText(component && component.encryptExpectId) || encryptExpectId;
+    } else if (mode === 'select') {
+      encryptExpectId = normalizeText(component && component.mixEncryptExpectId) || encryptExpectId;
+    } else if (mode === 'partTime') {
+      encryptExpectId = normalizeText(component && component.partTimeExpect) || encryptExpectId;
+    }
+
+    return {
+      mode,
+      label: normalizeText(active && (active.innerText || active.textContent)),
+      encryptExpectId,
+      mixExpectType: normalizeText(component && component.mixExpectType) || requestContext.mixExpectType,
+      expectInfo: requestContext.expectInfo,
+      jobType: requestContext.jobType,
+      capturedAt: Date.now(),
+    };
+  }
+
+  // 比对标签层状态：mode、encryptExpectId 和可见文案共同一致才视为仍选中原求职期望。
+  function isJobExpectationUiMatched(current, expected) {
+    if (!expected || !expected.mode) return true;
+    if (!current || current.mode !== expected.mode) return false;
+    if (expected.encryptExpectId && current.encryptExpectId !== expected.encryptExpectId) return false;
+    if (expected.label && current.label && current.label !== expected.label) return false;
+    return true;
+  }
+
+  // 比对接口层状态；不同标签模式使用 BOSS 实际提交的不同参数作为身份标识。
+  function isJobExpectationRequestMatched(url, expected) {
+    if (!expected || !expected.mode) return true;
+    if (!url) return false;
+    const current = parseJobExpectationRequestContext(url);
+
+    if (expected.mode === 'expect') {
+      return Boolean(expected.encryptExpectId && current.encryptExpectId === expected.encryptExpectId);
+    }
+    if (expected.mode === 'partTime') {
+      return Boolean(
+        expected.encryptExpectId &&
+        current.encryptExpectId === expected.encryptExpectId &&
+        Number(current.jobType || expected.jobType || 0) === 1903,
+      );
+    }
+    if (expected.mode === 'temp-expect') {
+      return Boolean(expected.expectInfo && current.expectInfo === expected.expectInfo);
+    }
+    if (expected.mode === 'select') {
+      return current.encryptExpectId === normalizeText(expected.encryptExpectId) &&
+        current.mixExpectType === normalizeText(expected.mixExpectType) &&
+        current.expectInfo === normalizeText(expected.expectInfo) &&
+        current.jobType === normalizeText(expected.jobType);
+    }
+    return true;
+  }
+
+  // 找到冻结期望对应的可点击标签；优先文案匹配，再按 Vue expectList 中 encryptId 的索引兜底。
+  function findFrozenJobExpectationElement(expected) {
+    const root = document.querySelector('.c-expect-select');
+    if (!root || !expected) return null;
+    if (expected.mode === 'select') return root.querySelector('a.synthesis');
+    if (expected.mode === 'partTime') return root.querySelector('.part-time-expect');
+
+    const candidates = Array.from(root.querySelectorAll('a.expect-item'));
+    const expectedLabel = normalizeText(expected.label);
+    const textMatched = candidates.find((element) => (
+      normalizeText(element.innerText || element.textContent) === expectedLabel
+    ));
+    if (textMatched) return textMatched;
+
+    // 文案被页面截断或调整时，利用组件的期望列表按 encryptId 找到相同索引作为兜底。
+    try {
+      const component = root.__vue__;
+      const expectList = component && Array.isArray(component.expectList) ? component.expectList : [];
+      const index = expectList.findIndex((item) => (
+        normalizeText(item && item.encryptId) === normalizeText(expected.encryptExpectId)
+      ));
+      if (index >= 0 && candidates[index]) return candidates[index];
+    } catch (_) {}
+    return null;
+  }
+
+  // 生成一次无副作用的恢复就绪快照，集中记录标签、最新完成请求、卡片和详情状态。
+  function getJobExpectationReadyState(expected) {
+    const current = captureActiveJobExpectationContext();
+    const completedRequest = getLatestCompletedJobListRecord();
+    const detail = extractDetailInfo();
+    const chatButton = findChatButton(null);
+    return {
+      current,
+      completedRequest,
+      uiMatched: isJobExpectationUiMatched(current, expected),
+      requestMatched: isJobExpectationRequestMatched(completedRequest && completedRequest.url, expected),
+      cardsReady: hasVisibleJobCards(),
+      detailReady: Boolean(detail && detail.jobName && chatButton),
+      detailJobName: normalizeText(detail && detail.jobName),
+    };
+  }
+
+  // 等待目标期望的标签与列表真正稳定；支持完成时间门槛、静默窗口和无 Resource Timing 时的 UI 兜底。
+  async function waitForJobExpectationReady(expected, options) {
+    const settings = options || {};
+    const requiredCompletedAt = Number(settings.requiredCompletedAt || 0);
+    const settleMs = Math.max(0, Number(settings.settleMs || 0));
+    const allowStableUiFallback = Boolean(settings.allowStableUiFallback);
+    const timeout = Math.max(1200, Number(settings.timeout || getWaitTimeout() * 1000));
+    let stableSince = 0;
+    let sawListReset = Boolean(settings.sawListReset);
+
+    return waitFor(() => {
+      const ready = getJobExpectationReadyState(expected);
+      if (!ready.cardsReady) sawListReset = true;
+      if (!ready.uiMatched || !ready.cardsReady) {
+        stableSince = 0;
+        return null;
+      }
+
+      // settleMs 是响应静默窗口：如果期间又完成了推荐请求，最新记录会变化并重新进入判断。
+      const completedAt = Number(ready.completedRequest && ready.completedRequest.capturedAt || 0);
+      const requestSettled = !settleMs || Date.now() - completedAt >= settleMs;
+      if (ready.requestMatched && (!requiredCompletedAt || completedAt >= requiredCompletedAt) && requestSettled) {
+        return Object.assign(ready, { confirmation: 'completed-request', sawListReset });
+      }
+
+      // 只有完全缺少本轮完成记录时才用 UI 稳定态兜底；若本轮最后完成的是推荐请求，绝不能绕过。
+      const hasRelevantCompletedRequest = Boolean(
+        completedAt && (!requiredCompletedAt || completedAt >= requiredCompletedAt),
+      );
+      if (
+        allowStableUiFallback &&
+        (!requiredCompletedAt || sawListReset) &&
+        (!hasRelevantCompletedRequest || ready.requestMatched)
+      ) {
+        if (!stableSince) stableSince = Date.now();
+        if (Date.now() - stableSince >= 900) {
+          return Object.assign(ready, { confirmation: 'stable-ui', sawListReset });
+        }
+      } else {
+        stableSince = 0;
+      }
+      return null;
+    }, timeout, '求职期望列表与详情');
+  }
+
+  // 目标列表稳定后，把可见选中卡片与右侧详情再对齐一次，阻断旧“推荐”详情的晚到响应。
+  async function synchronizeVisibleJobDetailAfterExpectationRestore(expected, timeout) {
+    const entries = getVisibleJobScanEntries();
+    const selected = entries.find((entry) => /active|selected|cur|current/.test(String(entry.card.className || '')));
+    const entry = selected || entries[0];
+    if (!entry || !entry.job || !entry.job.jobName) {
+      throw new Error('求职期望已恢复，但没有可同步的岗位卡片');
+    }
+
+    let job = entry.job;
+    let ready = getJobCommunicationDetailReady(job);
+    let clicked = false;
+    if (!ready) {
+      // 当前详情仍属于旧列表时主动点击目标卡片，并用接口数据补齐强身份后再校验按钮。
+      clicked = true;
+      entry.card.scrollIntoView({ block: 'center', inline: 'nearest' });
+      const detailResourceStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+      clickElement(entry.card);
+      await sleep(250);
+
+      const apiDetail = await JobRepository.waitForJobDetail(
+        job,
+        Math.min(4200, Math.max(2600, Number(timeout || getWaitTimeout() * 1000))),
+        detailResourceStartedAt,
+        { includeHtml: false, forceApiFetch: true },
+      );
+      if (apiDetail) job = mergeJobInfo(job, apiDetail);
+    }
+
+    // 恢复场景使用更长的 650ms 稳定窗口，专门覆盖推荐详情比目标列表更晚返回的竞态。
+    ready = await waitForJobCommunicationDetail(
+      job,
+      Math.max(3000, Number(timeout || getWaitTimeout() * 1000)),
+      650,
+    );
+    const result = {
+      clicked,
+      cardJobName: normalizeText(job.jobName),
+      detailJobName: normalizeText(ready.detail && ready.detail.jobName),
+      buttonKa: normalizeText(ready.chatButton && ready.chatButton.getAttribute('ka')),
+    };
+    logDebugEvent('job_expectation_detail_synchronized', { expected, result });
+    return result;
+  }
+
+  // 返回列表或页面恢复时先核验求职期望；若 BOSS 重置为推荐，恢复正确列表后才允许继续扫描。
+  async function ensureFrozenJobExpectationContext(state, reason) {
+    const expected = state && state.listExpectationContext;
+    if (!expected || !expected.mode) return { required: false, restored: false, matched: true, label: '' };
+
+    await waitForElement('.c-expect-select', Math.max(3000, getWaitTimeout() * 1000), '求职期望标签');
+    let current = captureActiveJobExpectationContext();
+    const uiMatched = isJobExpectationUiMatched(current, expected);
+
+    // 已经激活正确标签时绝不能重复点击：BOSS 会忽略激活项点击，也不会重新发列表请求。
+    if (uiMatched) {
+      try {
+        // 正常返回只做短稳定检查，不额外点击标签，以免制造一次无响应的等待。
+        const ready = await waitForJobExpectationReady(expected, {
+          allowStableUiFallback: true,
+          settleMs: 350,
+          timeout: Math.min(2600, Math.max(1600, getWaitTimeout() * 350)),
+        });
+        const result = {
+          required: true,
+          restored: false,
+          matched: true,
+          label: expected.label || current && current.label || '',
+          confirmation: ready.confirmation,
+          requestUrl: normalizeText(ready.completedRequest && ready.completedRequest.url),
+          detailJobName: ready.detailJobName,
+        };
+        logDebugEvent('job_expectation_already_ready', { reason, expected, result });
+        return result;
+      } catch (error) {
+        logDebugEvent('job_expectation_active_not_ready', {
+          reason,
+          expected,
+          current,
+          ready: getJobExpectationReadyState(expected),
+          message: error && error.message || String(error),
+        }, 'warn');
+        throw new Error(`求职期望已选中，但岗位列表或详情未就绪：${expected.label || expected.mode}`);
+      }
+    }
+
+    const requestUrl = getLatestJobListRequestUrl();
+    const target = findFrozenJobExpectationElement(expected);
+    if (!target || !isVisible(target)) {
+      logDebugEvent('job_expectation_restore_target_missing', {
+        reason,
+        expected,
+        current,
+        requestUrl,
+      }, 'error');
+      throw new Error(`无法恢复求职期望：${expected.label || expected.encryptExpectId || expected.mode}`);
+    }
+
+    const restoreStartedAt = Date.now();
+    const sawListResetInitially = !hasVisibleJobCards();
+    UI.setStatus(`检测到 BOSS 已切换标签，正在恢复：${expected.label || '原求职期望'}`, 'warn');
+    logDebugEvent('job_expectation_restore_start', {
+      reason,
+      expected,
+      current,
+      requestUrl,
+      restoreStartedAt,
+    }, 'warn');
+
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    clickElement(target);
+    // 点击恢复后只接受本次点击之后完成、且参数属于目标期望的列表请求；800ms 用于吸收并发晚到响应。
+    const ready = await waitForJobExpectationReady(expected, {
+      requiredCompletedAt: restoreStartedAt,
+      allowStableUiFallback: true,
+      sawListReset: sawListResetInitially,
+      settleMs: 800,
+      timeout: Math.max(10000, getWaitTimeout() * 1400),
+    });
+
+    // 用已经确认属于目标求职期望的 URL 主动补抓一次，避免接口池仍残留“推荐”岗位。
+    if (ready.requestMatched && ready.completedRequest && ready.completedRequest.url) {
+      const fetched = await JobRepository.fetchLatestJobList(ready.completedRequest).catch((error) => {
+        logDebugEvent('job_expectation_list_replay_failed', {
+          expected,
+          requestUrl: ready.completedRequest.url,
+          message: error && error.message || String(error),
+        }, 'warn');
+        return false;
+      });
+      if (!fetched) throw new Error(`求职期望列表补抓失败：${expected.label || expected.mode}`);
+    }
+
+    current = ready.current;
+    JobRepository.syncCards();
+    // 接口池恢复正确后继续对齐右侧详情，只有卡片/详情/按钮一致才算完整恢复成功。
+    const detailSync = await synchronizeVisibleJobDetailAfterExpectationRestore(
+      expected,
+      Math.max(4500, getWaitTimeout() * 1000),
+    );
+    const result = {
+      required: true,
+      restored: true,
+      matched: true,
+      label: expected.label || current && current.label || '',
+      confirmation: ready.confirmation,
+      requestUrl: normalizeText(ready.completedRequest && ready.completedRequest.url),
+      detailJobName: detailSync.detailJobName || ready.detailJobName,
+      detailSync,
+    };
+    logDebugEvent('job_expectation_restore_success', {
+      reason,
+      expected,
+      result,
+      listState: getDebugListState(),
+    });
+    return result;
   }
 
   // 从聊天页返回岗位列表。历史返回只有在筛选上下文一致时才成功，否则恢复本轮冻结的完整 URL。
