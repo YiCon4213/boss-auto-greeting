@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BOSS直聘自动沟通助手
 // @namespace    local.codex.zhipin
-// @version      0.1.7
+// @version      0.1.8
 // @description  在 BOSS 直聘搜索结果页自动选择岗位、发送常用语或自定义问候语，并记录岗位数据。
 // @match        https://www.zhipin.com/web/geek/jobs*
 // @match        https://www.zhipin.com/web/geek/chat*
@@ -37,7 +37,7 @@
   // 全局常量：集中维护脚本版本、存储 key、BOSS 接口特征和默认问候语。
   const APP = {
     name: 'BOSS自动沟通',
-    version: '0.1.7',
+    version: '0.1.8',
     dbName: 'ZhipinAutoGreetingDB',
     dbVersion: 1,
     configKey: '__zhipin_auto_greeting_config__',
@@ -158,6 +158,7 @@
     contactedIndexReady: false,
     // 自动化运行锁和停止标记，避免重复启动多个并发循环。
     automationLoopActive: false,
+    resumeInProgress: false,
     stopRequested: false,
     statusLock: null,
     companyFilterEdited: false,
@@ -1654,6 +1655,7 @@
             () => this.getDetailForJob(job),
             Math.min(1800, totalTimeout),
             '岗位详情接口',
+            { pollInterval: 120 },
           );
           logDebugEvent('job_detail_wait_initial_hit', {
             job: summarizeJobForDebug(job),
@@ -1698,6 +1700,7 @@
             () => this.getDetailForJob(job),
             Math.min(1500, Math.max(300, totalTimeout - (Date.now() - startedAt))),
             '岗位详情接口',
+            { pollInterval: 120 },
           );
           logDebugEvent('job_detail_wait_late_hit', {
             job: summarizeJobForDebug(job),
@@ -1740,7 +1743,7 @@
         const htmlDetail = await waitFor(() => {
           const latest = this.getDetailForJob(job);
           return latest && latest.htmlCapturedAt ? latest : null;
-        }, Math.min(remaining, 1800), '岗位 HTML 详情');
+        }, Math.min(remaining, 1800), '岗位 HTML 详情', { pollInterval: 120 });
         logDebugEvent('job_detail_html_wait_hit', {
           job: summarizeJobForDebug(job),
           detail: summarizeJobForDebug(htmlDetail),
@@ -2087,7 +2090,12 @@
       }
 
       try {
-        await waitFor(() => runtime.jobPool.length > 0, timeout || 1800, '岗位接口数据');
+        await waitFor(
+          () => runtime.jobPool.length > 0,
+          timeout || 1800,
+          '岗位接口数据',
+          { pollInterval: 120 },
+        );
         if (this.isJobPoolUsableForCards()) return true;
         this.resetJobListScope('');
       } catch (_) {}
@@ -4157,44 +4165,45 @@
 
     // 页面加载、pageshow 或路由切换时调用，根据 RunState 恢复 list/chat/returning 阶段。
     async resumeIfNeeded(reason) {
-      const state = RunState.load();
-      if (!state || !state.active || runtime.automationLoopActive) return;
+      let state = RunState.load();
+      if (!state || !state.active || runtime.automationLoopActive || runtime.resumeInProgress) return;
+      runtime.resumeInProgress = true;
 
-      // 页面跳转或刷新后先恢复 IndexedDB 和已沟通索引，再根据 phase 继续对应阶段。
       try {
+        // 先抢占恢复锁，再异步初始化；防止 boot/pageshow 同时穿过 automationLoopActive 检查。
         await Database.open();
         await Database.ensureStorageAvailable();
         await ContactedIndex.ensureReady();
-      } catch (error) {
-        this.fatal(error.message || String(error));
-        return;
-      }
-      runtime.stopRequested = false;
-      UI.setRunning(true);
+        state = RunState.load();
+        if (!state || !state.active) return;
 
-      if (state.phase === 'returning') {
-        runtime.automationLoopActive = true;
-        UI.setStatus('正在恢复返回岗位列表...', 'info');
-        try {
+        runtime.stopRequested = false;
+        UI.setRunning(true);
+
+        if (state.phase === 'returning') {
+          runtime.automationLoopActive = true;
+          UI.setStatus('正在恢复返回岗位列表...', 'info');
           await this.completeReturnToList(state, reason || 'returning');
-        } catch (error) {
-          runtime.automationLoopActive = false;
-          this.fatal(error.message || String(error));
+          return;
         }
-        return;
-      }
 
-      if ((state.phase === 'chat' || isChatPage()) && state.pendingJob) {
-        this.continueFromChat(reason);
-        return;
-      }
+        if ((state.phase === 'chat' || isChatPage()) && state.pendingJob) {
+          this.continueFromChat(reason);
+          return;
+        }
 
-      if (state.phase === 'chat' && !state.pendingJob) {
-        this.fatal('运行状态缺少待沟通岗位，请重新启动脚本');
-        return;
-      }
+        if (state.phase === 'chat' && !state.pendingJob) {
+          this.fatal('运行状态缺少待沟通岗位，请重新启动脚本');
+          return;
+        }
 
-      this.runListLoop(reason);
+        this.runListLoop(reason);
+      } catch (error) {
+        runtime.automationLoopActive = false;
+        this.fatal(error.message || String(error));
+      } finally {
+        runtime.resumeInProgress = false;
+      }
     },
 
     // 列表页主循环：按稳定岗位标识处理卡片，直到停止、达到上限或列表结束。
@@ -4380,7 +4389,6 @@
       const detailResourceStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       // 先点岗位卡片让右侧详情刷新，再从详情接口/DOM 里补充岗位信息。
       clickElement(card);
-      await sleep(250);
 
       const apiDetail = await JobRepository.waitForJobDetail(
         job,
@@ -4508,6 +4516,8 @@
         chatOpenRetryCount: 0,
       });
 
+      // 完整文档导航会把当前列表页放入 BFCache；先监听 pagehide，避免返回后旧超时器误停新流程。
+      this.watchChatPageTransition(job);
       clickElement(chatButton);
       logDebugEvent('chat_button_clicked', {
         cursorIndex,
@@ -4517,22 +4527,53 @@
       });
       UI.setStatus('已进入聊天页，等待发送...', 'info');
 
-      await sleep(1200);
-      if (isChatPage()) {
+      return 'navigating';
+    },
+
+    // 同时覆盖 SPA 跳转和完整文档导航；pagehide 会在 BFCache 冻结计时器前完成清理。
+    watchChatPageTransition(job) {
+      waitFor(() => isChatPage() ? 'same-page' : null, getWaitTimeout(), '聊天页跳转', {
+        observerRoot: getPageObserverRoot(),
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style', 'hidden'],
+        pollInterval: 200,
+        resolveOnPageHide: true,
+        pageHideResult: 'pagehide',
+      }).then((transition) => {
+        logDebugEvent('chat_page_transition_observed', {
+          transition,
+          href: location.href,
+          job: summarizeJobForDebug(job),
+          runState: RunState.load(),
+        });
+        if (transition !== 'same-page' || !isChatPage()) return;
+
         const latestState = RunState.load();
         if (latestState && latestState.active && latestState.phase === 'chat' && latestState.pendingJob) {
-          runtime.automationLoopActive = false;
-          setTimeout(() => this.continueFromChat('same-page'), 0);
-        } else {
-          logDebugEvent('same_page_continue_skipped', {
-            reason: 'state_not_chat',
-            latestState,
-            clickedJob: summarizeJobForDebug(job),
-          });
+          setTimeout(() => {
+            runtime.automationLoopActive = false;
+            this.continueFromChat('same-page');
+          }, 0);
         }
-      }
+      }).catch((error) => {
+        const latestState = RunState.load();
+        logDebugEvent('chat_page_transition_timeout', {
+          message: error && error.message || String(error),
+          href: location.href,
+          job: summarizeJobForDebug(job),
+          runState: latestState,
+        }, 'warn');
 
-      return 'navigating';
+        // 点击未触发导航时交给现有的聊天渲染/重新点击机制处理，不再直接 fatal 停机。
+        if (latestState && latestState.active && latestState.phase === 'chat' && latestState.pendingJob && isJobListRoute()) {
+          setTimeout(() => {
+            runtime.automationLoopActive = false;
+            this.continueFromChat('chat-transition-timeout');
+          }, 0);
+        }
+      });
     },
 
     // 聊天页续跑：从 RunState 恢复 pendingJob，发送问候语，写 sent 记录，再进入 returning。
@@ -4691,7 +4732,6 @@
       card.scrollIntoView({ block: 'center', inline: 'nearest' });
       const detailResourceStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       clickElement(card);
-      await sleep(250);
 
       const apiDetail = await JobRepository.waitForJobDetail(
         pendingJob,
@@ -4735,7 +4775,6 @@
         chatButtonText: buttonText,
         listUrl: state && state.listUrl || location.href,
       });
-      await sleep(1000);
     },
 
     // 发送完成后先尝试历史返回；只有筛选上下文完全一致才算成功，否则恢复固定的原列表 URL。
@@ -4795,8 +4834,10 @@
         }
 
         cursorIndex = 0;
+        const beforeRenderSignature = getVisibleJobListRenderSignature();
+        const beforeResponseSerial = Number(runtime.jobListResponseSerial || 0);
         scrollJobListToTop();
-        await sleep(300);
+        await waitForJobListRenderChange(beforeRenderSignature, beforeResponseSerial, 600);
         JobRepository.syncCards();
         UI.setStatus('检测到岗位列表刷新，已保留已处理岗位并从顶部继续', 'warn');
       } else if (expectationResult.restored) {
@@ -5496,9 +5537,11 @@
       const scroller = findScrollParent(anchor) || document.scrollingElement || document.documentElement;
       if (!scroller || targetTop <= 0) break;
       const beforeTop = Number(scroller.scrollTop || 0);
+      const beforeRenderSignature = getVisibleJobListRenderSignature();
+      const beforeResponseSerial = Number(runtime.jobListResponseSerial || 0);
       scroller.scrollTop = targetTop;
       scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-      await sleep(350);
+      await waitForJobListRenderChange(beforeRenderSignature, beforeResponseSerial, 700);
       JobRepository.syncCards();
       if (Number(scroller.scrollTop || 0) >= targetTop - 2 || Number(scroller.scrollTop || 0) <= beforeTop) break;
     }
@@ -6223,6 +6266,16 @@
       },
       Math.max(2000, Number(timeout || getWaitTimeout() * 1000)),
       '当前岗位详情与沟通按钮',
+      {
+        observerRoot: getJobDetailObserverRoot(),
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+        attributeFilter: ['class', 'href', 'ka', 'style', 'hidden'],
+        // 稳定窗口结束时 DOM 可能不再变化，需要低频复核时间条件。
+        pollInterval: 120,
+      },
     );
   }
 
@@ -6414,25 +6467,57 @@
       }
 
       return null;
-    }, getWaitTimeout(), '聊天界面渲染');
+    }, getWaitTimeout(), '聊天界面渲染', {
+      observerRoot: getChatObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'contenteditable'],
+      // history 路由变化本身不一定产生 DOM mutation，低频轮询仅用于这一兜底。
+      pollInterval: 200,
+    });
   }
 
   // 向聊天输入框写入文本并按 Enter，返回发送前快照供后续确认。
   async function sendChatTextByEnter(messageText) {
-    const input = await waitFor(() => findChatInput(), getChatWaitTimeout(), '聊天输入框');
+    const input = await waitFor(() => findChatInput(), getChatWaitTimeout(), '聊天输入框', {
+      observerRoot: getChatObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'contenteditable'],
+    });
     const snapshot = getSendVerificationSnapshot(messageText);
 
     // BOSS 聊天框是 contenteditable div。这里只负责写入草稿并触发 Enter，是否真的发出由后续聊天记录确认决定。
     setEditableText(input, messageText);
-    await waitFor(() => inputContainsText(findChatInput(), messageText), 3000, '聊天输入框写入文本');
+    await waitFor(() => inputContainsText(findChatInput(), messageText), 3000, '聊天输入框写入文本', {
+      observerRoot: input.parentElement || input,
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+      attributeFilter: ['class', 'style', 'hidden', 'value'],
+      // textarea.value 属于属性状态，不保证产生 MutationRecord。
+      pollInterval: 120,
+    });
 
-    await sleep(300);
     pressEnter(findChatInput() || input);
 
-    // 如果 Enter 没有触发发送，最多再点一次页面自己的发送按钮；之后仍未确认就直接停机。
-    await sleep(800);
-    const current = getSendVerificationSnapshot(messageText);
-    if (!isMessageActuallySent(snapshot, current) && inputContainsText(findChatInput(), messageText)) {
+    // 如果 Enter 没有触发发送，观察聊天区域到短超时，再最多点击一次页面自己的发送按钮。
+    const sentByEnter = await waitFor(() => {
+      const current = getSendVerificationSnapshot(messageText);
+      return isMessageActuallySent(snapshot, current) ? true : null;
+    }, 800, 'Enter 发送结果', {
+      observerRoot: getChatObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+      pollInterval: 120,
+    }).then(() => true).catch(() => false);
+    if (!sentByEnter && inputContainsText(findChatInput(), messageText)) {
       const sendButton = findSendButton();
       if (sendButton) clickNative(sendButton);
     }
@@ -6453,7 +6538,15 @@
         return true;
       }
       return null;
-    }, getChatWaitTimeout(), '消息发送确认');
+    }, getChatWaitTimeout(), '消息发送确认', {
+      observerRoot: getChatObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+      pollInterval: 120,
+    });
   }
 
   // 生成发送校验快照：目标 token 当前出现次数和“确认发送”次数。
@@ -6768,7 +6861,16 @@
         stableSince = 0;
       }
       return null;
-    }, timeout, '求职期望列表与详情');
+    }, timeout, '求职期望列表与详情', {
+      observerRoot: getPageObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      characterData: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+      // 该条件同时依赖接口完成时间和静默窗口，DOM 不变化时也要复核。
+      pollInterval: 120,
+    });
   }
 
   // 目标列表稳定后，把可见选中卡片与右侧详情再对齐一次，阻断旧“推荐”详情的晚到响应。
@@ -6789,7 +6891,6 @@
       entry.card.scrollIntoView({ block: 'center', inline: 'nearest' });
       const detailResourceStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
       clickElement(entry.card);
-      await sleep(250);
 
       const apiDetail = await JobRepository.waitForJobDetail(
         job,
@@ -6980,7 +7081,19 @@
         listFilterSignature: expectedSignature || makeJobListFilterSignature(targetListUrl),
       });
       pageWindow.location.assign(targetListUrl);
-      await waitFor(() => isJobListRoute() && currentContextMatches() && hasVisibleJobCards(), timeout, '原岗位筛选页恢复');
+      await waitFor(
+        () => isJobListRoute() && currentContextMatches() && hasVisibleJobCards(),
+        timeout,
+        '原岗位筛选页恢复',
+        {
+          observerRoot: getPageObserverRoot(),
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class', 'style', 'hidden'],
+          pollInterval: 200,
+        },
+      );
       return { exactRestored: true, usedHistory: false, href: location.href };
     }
 
@@ -7017,7 +7130,14 @@
       if (hasVisibleJobCards()) return true;
       if (location.href !== previousHref && isJobListRoute()) return true;
       return null;
-    }, timeout, '岗位列表恢复');
+    }, timeout, '岗位列表恢复', {
+      observerRoot: getPageObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+      pollInterval: 200,
+    });
   }
 
   // 生成可恢复的列表 URL，只作为极端兜底，不作为正常返回路径。
@@ -7049,7 +7169,15 @@
     return waitFor(() => {
       const card = Array.from(document.querySelectorAll('li.job-card-box')).find(isVisible);
       return card || null;
-    }, timeout, '岗位列表');
+    }, timeout, '岗位列表', {
+      // 完整导航/BFCache 返回时列表容器会被整体替换，必须监听稳定的 #wrap 应用根节点。
+      observerRoot: getPageObserverRoot(),
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
+      pollInterval: 200,
+    });
   }
 
   // 判断当前是否处于聊天路由。
@@ -7132,6 +7260,37 @@
     return '';
   }
 
+  // 生成当前虚拟列表渲染签名，滚动后据此等待卡片真正换批，而不是固定 sleep。
+  function getVisibleJobListRenderSignature() {
+    return getVisibleJobScanEntries()
+      .map((entry) => entry.key || makeCardSnapshotKey(entry.domInfo))
+      .filter(Boolean)
+      .join('||');
+  }
+
+  // 等待虚拟列表 DOM/接口批次变化；超时仅表示列表可能复用了同一批节点，调用方继续做状态兜底检查。
+  async function waitForJobListRenderChange(previousSignature, previousResponseSerial, timeout) {
+    try {
+      await waitFor(() => {
+        const currentSignature = getVisibleJobListRenderSignature();
+        if (currentSignature && currentSignature !== previousSignature) return true;
+        if (Number(runtime.jobListResponseSerial || 0) > Number(previousResponseSerial || 0)) return true;
+        return null;
+      }, Math.max(300, Number(timeout || 700)), '岗位列表渲染更新', {
+        observerRoot: getJobListObserverRoot(),
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+        attributeFilter: ['class', 'style', 'hidden'],
+        pollInterval: 120,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // 返回列表后短暂观察是否出现第一页接口响应，用于判断列表被刷新。
   async function waitForReturnedJobListRefresh(returnStartedAt) {
     const timeout = Math.min(Math.max(700, getWaitTimeout() * 250), 1800);
@@ -7143,7 +7302,7 @@
           return latestFirstPage;
         }
         return null;
-      }, timeout, '岗位列表刷新检测');
+      }, timeout, '岗位列表刷新检测', { pollInterval: 120 });
     } catch (_) {}
   }
 
@@ -7154,6 +7313,10 @@
       const anchor = cards[0] || document.querySelector('li.job-card-box');
       const scroller = findScrollParent(anchor) || document.scrollingElement || document.documentElement;
       if (!scroller) return false;
+      const beforeTop = Number(scroller.scrollTop || 0);
+      if (beforeTop <= 1) return true;
+      const beforeRenderSignature = getVisibleJobListRenderSignature();
+      const beforeResponseSerial = Number(runtime.jobListResponseSerial || 0);
 
       if (anchor) anchor.scrollIntoView({ block: 'start', inline: 'nearest' });
       scroller.scrollTop = 0;
@@ -7161,7 +7324,7 @@
       try {
         pageWindow.scrollTo(0, 0);
       } catch (_) {}
-      await sleep(350);
+      await waitForJobListRenderChange(beforeRenderSignature, beforeResponseSerial, 700);
       JobRepository.syncCards();
       if (Number(scroller.scrollTop || 0) <= 1) return true;
     }
@@ -7196,7 +7359,16 @@
     };
 
     try {
-      await waitFor(hasProgress, Math.min(getWaitTimeout(), 6000), '加载更多岗位');
+      await waitFor(hasProgress, Math.min(getWaitTimeout(), 6000), '加载更多岗位', {
+        observerRoot: getJobListObserverRoot(),
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+        attributeFilter: ['class', 'style', 'hidden'],
+        // 接口批次和 scrollTop 变化不一定对应 DOM MutationRecord。
+        pollInterval: 120,
+      });
       return true;
     } catch (_) {
       return hasProgress();
@@ -7252,65 +7424,177 @@
     return document.scrollingElement || document.documentElement;
   }
 
-  // 等待某个可见元素出现的便捷封装。
-  function waitForElement(selector, timeout, label) {
+  // 岗位列表更新频繁，DOM 等待优先监听列表自身，找不到时才退回页面应用根节点。
+  function getJobListObserverRoot() {
+    const list = document.querySelector('.job-list-box, .search-job-result, .job-list-container');
+    const card = document.querySelector('li.job-card-box');
+    return list && list.parentElement ||
+      card && card.parentElement ||
+      getPageObserverRoot();
+  }
+
+  // 监听右侧详情的稳定父容器，既能捕获内容更新，也能覆盖详情盒子被整体替换的情况。
+  function getJobDetailObserverRoot() {
+    const detail = Array.from(document.querySelectorAll('.job-detail-box')).find(isVisible) ||
+      document.querySelector('.job-detail-container, .job-detail-wrapper');
+    return detail && detail.parentElement || detail || getPageObserverRoot();
+  }
+
+  // 聊天输入框和消息列表位于同一聊天区域；若尚未渲染则监听稳定的应用根节点。
+  function getChatObserverRoot() {
+    const input = findChatInput();
+    const conversation = Array.from(document.querySelectorAll('.chat-record, .chat-message-list, .chat-message, .chat-conversation'))
+      .find((element) => !isOwnUiElement(element) && isVisible(element));
+    const commonRoot = findCommonElementAncestor(input, conversation);
+    return commonRoot && commonRoot !== document.body && commonRoot !== document.documentElement
+      ? commonRoot
+      : input && input.closest('.chat-container, .chat-wrapper, .chat-box, .chat-content, .chat-main') ||
+      document.querySelector('.chat-container, .chat-wrapper, .chat-box, .chat-content, .chat-main') ||
+      getPageObserverRoot();
+  }
+
+  // 找到两个聊天节点的最近公共父元素，使一次 observer 同时覆盖输入框和消息列表。
+  function findCommonElementAncestor(first, second) {
+    if (!first || !second) return null;
+    const ancestors = new Set();
+    let current = first;
+    while (current) {
+      ancestors.add(current);
+      current = current.parentElement;
+    }
+    current = second;
+    while (current) {
+      if (ancestors.has(current)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  // 页面级 SPA 切换才使用应用根节点，避免默认监听整个 documentElement。
+  function getPageObserverRoot() {
+    return document.querySelector('#wrap, #app, .app-main') || document.body || document.documentElement;
+  }
+
+  // 根据目标类型选择尽量小且稳定的观察根节点。
+  function getElementObserverRoot(selector) {
+    if (/job-card-box/.test(selector)) return getJobListObserverRoot();
+    if (/job-detail|op-btn-chat/.test(selector)) return getJobDetailObserverRoot();
+    if (/chat-input|contenteditable/.test(selector)) return getChatObserverRoot();
+    if (/c-expect-select/.test(selector)) {
+      const expectation = document.querySelector('.c-expect-select');
+      return expectation && expectation.parentElement || getPageObserverRoot();
+    }
+    return getPageObserverRoot();
+  }
+
+  // 等待某个可见元素出现；纯 DOM 场景只由 MutationObserver 驱动，并由超时定时器兜底。
+  function waitForElement(selector, timeout, label, options) {
+    const settings = options || {};
     return waitFor(() => {
       const element = document.querySelector(selector);
       return element && isVisible(element) ? element : null;
-    }, timeout, label || selector);
+    }, timeout, label || selector, {
+      observerRoot: settings.observerRoot || getElementObserverRoot(selector),
+      childList: true,
+      subtree: settings.subtree !== false,
+      attributes: settings.attributes !== false,
+      attributeFilter: settings.attributeFilter || ['class', 'style', 'hidden'],
+    });
   }
 
-  // 通用等待器：MutationObserver + 定时轮询，适合等待 SPA DOM 或接口缓存变化。
-  function waitFor(predicate, timeout, label) {
-    const timeoutMs = timeout > 100 ? timeout : timeout * 1000;
-    const startedAt = Date.now();
+  // 通用条件等待器：DOM 变化和非 DOM 状态按需启用，结束时统一释放 observer/timer。
+  function waitFor(predicate, timeout, label, options) {
+    const rawTimeout = Number(timeout);
+    const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.max(1, rawTimeout > 100 ? rawTimeout : rawTimeout * 1000)
+      : getWaitTimeout() * 1000;
+    const settings = options || {};
+    const observerRoot = settings.observerRoot && settings.observerRoot.nodeType
+      ? settings.observerRoot
+      : null;
+    const pollInterval = Math.max(0, Number(settings.pollInterval || 0));
 
     return new Promise((resolve, reject) => {
       let done = false;
       let observer = null;
+      let pollTimer = null;
+      let timeoutTimer = null;
+      let pageHideHandler = null;
 
-      const check = () => {
-        if (done) return;
-
-        try {
-          const result = predicate();
-          if (result) {
-            done = true;
-            if (observer) observer.disconnect();
-            resolve(result);
-            return;
-          }
-        } catch (error) {
-          if (error && error.zhipinAutoPause) {
-            done = true;
-            if (observer) observer.disconnect();
-            reject(error);
-            return;
-          }
+      const cleanup = () => {
+        if (observer) {
+          observer.disconnect();
+          observer = null;
         }
-
-        if (Date.now() - startedAt >= timeoutMs) {
-          done = true;
-          if (observer) observer.disconnect();
-          reject(new Error(`${label || '目标元素'} 等待超时`));
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        if (timeoutTimer) {
+          clearTimeout(timeoutTimer);
+          timeoutTimer = null;
+        }
+        if (pageHideHandler) {
+          pageWindow.removeEventListener('pagehide', pageHideHandler);
+          pageHideHandler = null;
         }
       };
 
-      observer = new MutationObserver(check);
-      observer.observe(document.documentElement || document, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-      });
-
-      check();
-      const timer = setInterval(() => {
-        if (done) {
-          clearInterval(timer);
-          return;
+      const finish = (error, result) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
         }
+      };
+
+      const check = () => {
+        if (done) return;
+        try {
+          const result = predicate();
+          if (result) finish(null, result);
+        } catch (error) {
+          if (error && error.zhipinAutoPause) finish(error);
+        }
+      };
+
+      // 先同步检查一次，已存在的元素不会创建无意义的 observer。
+      check();
+      if (done) return;
+
+      if (settings.resolveOnPageHide) {
+        pageHideHandler = () => finish(null, settings.pageHideResult || true);
+        pageWindow.addEventListener('pagehide', pageHideHandler, { once: true });
+      }
+
+      if (observerRoot && typeof MutationObserver === 'function') {
+        observer = new MutationObserver(check);
+        const observerOptions = {
+          childList: settings.childList !== false,
+          subtree: settings.subtree !== false,
+          attributes: Boolean(settings.attributes),
+          characterData: Boolean(settings.characterData),
+        };
+        if (observerOptions.attributes && Array.isArray(settings.attributeFilter) && settings.attributeFilter.length) {
+          observerOptions.attributeFilter = settings.attributeFilter;
+        }
+        observer.observe(observerRoot, observerOptions);
+        // 补一次检查，覆盖首次检查与 observer.observe 之间发生的变化。
         check();
-      }, 120);
+      }
+
+      if (!done && pollInterval > 0) {
+        pollTimer = setInterval(check, pollInterval);
+      }
+
+      if (!done) {
+        timeoutTimer = setTimeout(() => {
+          finish(new Error(`${label || '目标元素'} 等待超时`));
+        }, timeoutMs);
+      }
     });
   }
 
@@ -7566,7 +7850,14 @@
       const domDetail = await waitFor(() => {
         const detail = extractDetailInfo();
         return detail && detail.bossActiveTimeDesc ? detail : null;
-      }, Math.min(1800, getWaitTimeout() * 1000), 'Boss活跃度');
+      }, Math.min(1800, getWaitTimeout() * 1000), 'Boss活跃度', {
+        observerRoot: getJobDetailObserverRoot(),
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+        attributeFilter: ['class', 'style', 'hidden'],
+      });
       return mergeJobInfo(job, {
         bossActiveTimeDesc: domDetail.bossActiveTimeDesc,
         bossOnline: domDetail.bossOnline,
@@ -9194,11 +9485,9 @@
   setTimeout(syncAllowedPageUi, 0);
 
   pageWindow.addEventListener('pageshow', () => {
+    const wasMounted = Boolean(runtime.ui);
     const allowed = syncAllowedPageUi();
-    if (allowed) {
-      setTimeout(() => {
-        if (isAllowedDisplayPage()) Automation.resumeIfNeeded('pageshow');
-      }, 300);
-    }
+    // 恢复流程内部会按页面阶段等待对应 DOM，无需在 pageshow 后再盲等固定时间。
+    if (wasMounted && allowed && isAllowedDisplayPage()) Automation.resumeIfNeeded('pageshow');
   });
 })();
