@@ -106,7 +106,7 @@
     // 自动化策略：跳过已沟通、采集记录、返回列表后是否允许刷新、等待/重试/数量上限。
     skipContacted: true,
     collectGreetedJobs: true,
-    ignoreListRefresh: false,
+    ignoreListRefresh: true,
     delayMin: 4,
     delayMax: 8,
     waitTimeout: 5,
