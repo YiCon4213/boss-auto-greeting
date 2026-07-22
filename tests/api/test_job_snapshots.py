@@ -96,6 +96,33 @@ def test_duplicate_snapshot_returns_original_without_mutation(snapshot_client):
         ) == 1
 
 
+def test_duplicate_snapshot_replay_is_accepted_after_batch_collected(snapshot_client):
+    client, session_factory = snapshot_client
+    batch = create_batch(client, session_factory)
+    url = f"/api/v1/browser/batches/{batch['id']}/snapshots"
+    original = payload()
+    first = client.post(url, headers=headers(client, "browser"), json=original)
+    assert first.status_code == 200
+
+    with session_factory() as session:
+        record = BatchRepository(session).get(batch["id"])
+        record.status = "collected"
+        session.commit()
+
+    replay = client.post(
+        url,
+        headers=headers(client, "browser"),
+        json={**original, "description": "重放不得覆盖原快照"},
+    )
+
+    assert replay.status_code == 200
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.json()["duplicate"] is True
+    assert replay.json()["payload"]["description"] == original["description"]
+    with session_factory() as session:
+        assert session.scalar(select(func.count(JobSnapshot.id))) == 1
+
+
 def test_snapshot_rejects_missing_identity_and_non_collecting_batch(snapshot_client):
     client, session_factory = snapshot_client
     collecting = create_batch(client, session_factory)

@@ -44,13 +44,16 @@ class SnapshotService:
         batch = self.batches.get(batch_id)
         if batch is None:
             raise SnapshotBatchNotFound(batch_id)
-        if BatchStatus(batch.status) is not BatchStatus.COLLECTING:
-            raise SnapshotBatchConflict("batch is not collecting")
         identity_key = make_job_identity_key(
             encrypt_job_id=payload.encrypt_job_id,
             security_id=payload.security_id,
             lid=payload.lid,
         )
+        if (
+            BatchStatus(batch.status) is not BatchStatus.COLLECTING
+            and self.snapshots.get_by_identity(batch_id, identity_key) is None
+        ):
+            raise SnapshotBatchConflict("batch is not collecting")
         record, duplicate = self.snapshots.create_immutable(
             batch_id=batch_id,
             identity_key=identity_key,
