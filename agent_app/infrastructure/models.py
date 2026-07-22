@@ -164,6 +164,15 @@ class BrowserTask(IdMixin, TimestampMixin, Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    leased_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    progress_sequence: Mapped[int] = mapped_column(Integer, default=-1)
+    acked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AuditEvent(IdMixin, TimestampMixin, Base):

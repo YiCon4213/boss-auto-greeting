@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, SecretStr, field_validator
 
@@ -77,3 +77,34 @@ class BatchRead(BaseModel):
     source_url: HttpUrl
     counts: dict[str, int]
     available_actions: list[str]
+
+
+BrowserTaskType = Literal["collect_batch", "execute_delivery", "pause"]
+
+
+class BrowserTaskEnvelope(BaseModel):
+    id: str
+    type: BrowserTaskType
+    payload: dict[str, object]
+    lease_seconds: int = 30
+
+
+class BrowserTaskWorker(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=120)
+
+
+class BrowserTaskProgress(BrowserTaskWorker):
+    sequence: int = Field(ge=0)
+    status: str = Field(min_length=1, max_length=80)
+    detail: dict[str, object] = Field(default_factory=dict)
+
+
+class BrowserTaskResult(BaseModel):
+    ok: bool
+    result: dict[str, object] = Field(default_factory=dict)
+    error_code: str = Field(default="", max_length=120)
+    error_message: str = Field(default="", max_length=500)
+
+
+class BrowserTaskResolution(BrowserTaskResult):
+    worker_id: str = Field(min_length=1, max_length=120)
