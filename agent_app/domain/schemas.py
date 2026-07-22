@@ -67,6 +67,21 @@ class AnalysisView(BaseModel):
     error_code: str = ""
 
 
+class GreetingView(BaseModel):
+    id: str
+    snapshot_id: str
+    status: str
+    source: str
+    text: str
+    generated_text: str | None
+    final_text: str | None
+    used_facts: list[str]
+    approvable: bool
+    error_code: str = ""
+    model: str = ""
+    approved_at: datetime | None = None
+
+
 class BatchCreate(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
     analysis_enabled: bool = True

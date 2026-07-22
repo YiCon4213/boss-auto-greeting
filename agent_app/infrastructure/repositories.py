@@ -11,6 +11,7 @@ from agent_app.infrastructure.models import (
     AuditEvent,
     Batch,
     BrowserTask,
+    Greeting,
     JobSnapshot,
     ModelConfig,
     Profile,
@@ -293,6 +294,48 @@ class AnalysisRepository:
             self.session.add(record)
         else:
             record.status = status
+            record.payload = payload
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+
+class GreetingRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_latest(self, snapshot_id: str) -> Greeting | None:
+        return self.session.scalar(
+            select(Greeting)
+            .where(Greeting.job_snapshot_id == snapshot_id)
+            .order_by(Greeting.created_at.desc(), Greeting.id.desc())
+            .limit(1)
+        )
+
+    def save(
+        self,
+        *,
+        batch_id: str,
+        snapshot_id: str,
+        generated_text: str | None,
+        final_text: str | None,
+        payload: dict[str, object],
+    ) -> Greeting:
+        record = self.get_latest(snapshot_id)
+        if record is None:
+            record = Greeting(
+                batch_id=batch_id,
+                job_snapshot_id=snapshot_id,
+                generated_text=generated_text,
+                final_text=final_text,
+                payload=payload,
+            )
+            self.session.add(record)
+        else:
+            if record.payload.get("approved_at"):
+                raise RuntimeError("approved greeting is immutable")
+            record.generated_text = generated_text
+            record.final_text = final_text
             record.payload = payload
         self.session.commit()
         self.session.refresh(record)
