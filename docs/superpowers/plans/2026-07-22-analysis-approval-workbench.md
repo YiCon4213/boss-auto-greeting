@@ -299,7 +299,7 @@ Expected: all tests pass；两个 JavaScript 文件语法检查成功；`git dif
 - [x] 批准后文本与强 ID 不可变，任何发送入口都尚不能绕过批准。
 - [x] 工作台在窄屏可用，所有动态内容安全渲染。
 - [x] 按 `AGENTS.md` 检查并更新当前状态、路线图、计划索引、交接文档，安全清理完全过时且无独有证据的过程文件。
-- [ ] `git status --short` 为空，然后进入 Phase 4。
+- [x] `git status --short` 为空，然后进入 Phase 4。
 
 ## 实施记录
 
