@@ -1,6 +1,8 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, HttpUrl, SecretStr
+from pydantic import BaseModel, Field, HttpUrl, SecretStr, field_validator
+
+from agent_app.domain.enums import BatchStatus
 
 
 class ProfileUpdate(BaseModel):
@@ -44,3 +46,34 @@ class ModelConfigRead(BaseModel):
     timeout_seconds: int
     temperature: float
     api_key_configured: bool
+
+
+class BatchCreate(BaseModel):
+    limit: int = Field(default=10, ge=1, le=50)
+    analysis_enabled: bool = True
+    greeting_enabled: bool = True
+    source_url: HttpUrl
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: HttpUrl) -> HttpUrl:
+        if (
+            value.scheme != "https"
+            or value.host != "www.zhipin.com"
+            or value.path != "/web/geek/jobs"
+        ):
+            raise ValueError(
+                "source_url must be the HTTPS www.zhipin.com job list"
+            )
+        return value
+
+
+class BatchRead(BaseModel):
+    id: str
+    status: BatchStatus
+    limit: int
+    analysis_enabled: bool
+    greeting_enabled: bool
+    source_url: HttpUrl
+    counts: dict[str, int]
+    available_actions: list[str]

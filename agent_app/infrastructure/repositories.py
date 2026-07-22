@@ -1,7 +1,9 @@
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from agent_app.infrastructure.models import ModelConfig, Profile
+from agent_app.domain.enums import BatchStatus
+from agent_app.domain.schemas import BatchCreate
+from agent_app.infrastructure.models import Batch, ModelConfig, Profile
 
 
 class ProfileRepository:
@@ -69,6 +71,34 @@ class ModelConfigRepository:
             is_current=True,
         )
         self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+
+class BatchRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(self, payload: BatchCreate) -> Batch:
+        record = Batch(
+            status=BatchStatus.DRAFT.value,
+            limit=payload.limit,
+            analysis_enabled=payload.analysis_enabled,
+            greeting_enabled=payload.greeting_enabled,
+            source_url=str(payload.source_url),
+            counts={},
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def get(self, batch_id: str) -> Batch | None:
+        return self.session.get(Batch, batch_id)
+
+    def set_status(self, record: Batch, status: BatchStatus) -> Batch:
+        record.status = status.value
         self.session.commit()
         self.session.refresh(record)
         return record
