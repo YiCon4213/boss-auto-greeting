@@ -34,7 +34,7 @@
 - Consumes: environment variables `BOSS_AGENT_DATA_DIR`, `BOSS_AGENT_HOST`, `BOSS_AGENT_PORT`.
 - Produces: `agent_app.main.create_app(settings: Settings | None = None) -> FastAPI` and `GET /api/health`.
 
-- [ ] **Step 1: Add dependency manifests and runtime ignores**
+- [x] **Step 1: Add dependency manifests and runtime ignores**
 
 `requirements.txt`:
 
@@ -71,7 +71,7 @@ htmlcov/
 .boss-agent-secrets.json
 ```
 
-- [ ] **Step 2: Create the failing health test**
+- [x] **Step 2: Create the failing health test**
 
 ```python
 from fastapi.testclient import TestClient
@@ -93,7 +93,7 @@ def test_health_reports_local_service(tmp_path):
     }
 ```
 
-- [ ] **Step 3: Run the test and verify the expected failure**
+- [x] **Step 3: Run the test and verify the expected failure**
 
 Run:
 
@@ -105,7 +105,7 @@ py -3.11 -m venv .venv
 
 Expected: collection fails with `ModuleNotFoundError: No module named 'agent_app'`.
 
-- [ ] **Step 4: Implement settings and the app factory**
+- [x] **Step 4: Implement settings and the app factory**
 
 `agent_app/config.py`:
 
@@ -166,7 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 app = create_app()
 ```
 
-- [ ] **Step 5: Run the focused and syntax tests**
+- [x] **Step 5: Run the focused and syntax tests**
 
 Run:
 
@@ -177,7 +177,7 @@ Run:
 
 Expected: health test passes and compileall exits 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add .gitignore requirements.txt requirements-dev.txt agent_app tests
@@ -199,7 +199,7 @@ git commit -m "feat: bootstrap local agent service"
 - Consumes: `Settings.data_dir`.
 - Produces: `create_engine_and_session(settings) -> tuple[Engine, sessionmaker[Session]]`, ORM models, and migration revision `0001`.
 
-- [ ] **Step 1: Write the failing schema test**
+- [x] **Step 1: Write the failing schema test**
 
 ```python
 from sqlalchemy import inspect
@@ -227,13 +227,13 @@ def test_initial_schema_contains_agent_tables(tmp_path):
     }
 ```
 
-- [ ] **Step 2: Run the test and verify it fails**
+- [x] **Step 2: Run the test and verify it fails**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_database_schema.py -v`
 
 Expected: FAIL because `agent_app.infrastructure.database` does not exist.
 
-- [ ] **Step 3: Define domain enums**
+- [x] **Step 3: Define domain enums**
 
 `agent_app/domain/enums.py`:
 
@@ -269,7 +269,7 @@ class DeliveryStatus(StrEnum):
     CANCELLED = "cancelled"
 ```
 
-- [ ] **Step 4: Implement database creation and the initial models**
+- [x] **Step 4: Implement database creation and the initial models**
 
 `agent_app/infrastructure/database.py`:
 
@@ -321,11 +321,11 @@ class TimestampMixin:
 
 Required unique constraints: `job_snapshots(batch_id, job_identity_key)`, `delivery_items(approval_version_id, job_snapshot_id)`, and `browser_tasks.idempotency_key`.
 
-- [ ] **Step 5: Configure Alembic and write revision 0001**
+- [x] **Step 5: Configure Alembic and write revision 0001**
 
 Set `target_metadata = Base.metadata` in `alembic/env.py`. In `0001_initial_schema.py`, create exactly the eleven tables and constraints asserted by the test. `downgrade()` drops them in reverse foreign-key order.
 
-- [ ] **Step 6: Run schema and migration verification**
+- [x] **Step 6: Run schema and migration verification**
 
 Run:
 
@@ -339,7 +339,7 @@ Remove-Item Env:BOSS_AGENT_DATA_DIR
 
 Expected: test passes; Alembic reports revision `0001` as head.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add agent_app/domain agent_app/infrastructure alembic alembic.ini tests/unit/test_database_schema.py
@@ -360,7 +360,7 @@ git commit -m "feat: add agent database schema"
 - Consumes: `Settings.data_dir`, request header `X-Agent-Token`.
 - Produces: `SecretStore.get/set/delete`, `require_app_token`, and `require_browser_token`.
 
-- [ ] **Step 1: Write failing secret and authorization tests**
+- [x] **Step 1: Write failing secret and authorization tests**
 
 ```python
 def test_file_secret_store_never_returns_other_keys(tmp_path):
@@ -375,13 +375,13 @@ def test_business_api_rejects_missing_token(client):
     assert response.status_code == 401
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_secrets.py tests/api/test_auth.py -v`
 
 Expected: FAIL because secret and auth modules do not exist.
 
-- [ ] **Step 3: Implement the secret interface and file fallback**
+- [x] **Step 3: Implement the secret interface and file fallback**
 
 ```python
 from pathlib import Path
@@ -423,19 +423,19 @@ class FileSecretStore:
 
 Add `KeyringSecretStore` with service name `boss-resume-delivery-agent`; select keyring first and fall back to the file store only when keyring raises `NoKeyringError` or `KeyringError`.
 
-- [ ] **Step 4: Implement scoped token dependencies**
+- [x] **Step 4: Implement scoped token dependencies**
 
 Generate separate app and browser tokens on first startup using `secrets.token_urlsafe(32)`. Save only in the `SecretStore`. `require_app_token` compares `X-Agent-Token` with `hmac.compare_digest`; `require_browser_token` performs the same check against the browser token.
 
 Add a temporary protected `GET /api/v1/auth-check` returning `{"ok": true}` for the contract test. Do not expose tokens through any endpoint.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_secrets.py tests/api/test_auth.py -v`
 
 Expected: all tests pass; missing/wrong token returns 401 and correct app token returns 200.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add agent_app tests/unit/test_secrets.py tests/api/test_auth.py
@@ -458,7 +458,7 @@ git commit -m "feat: secure local agent endpoints"
 - Consumes: authorized profile/model payloads.
 - Produces: `ProfileService.model_context(profile) -> dict[str, object]`, `GET/PUT /api/v1/profiles/current`, and `GET/PUT /api/v1/settings/model`.
 
-- [ ] **Step 1: Write failing profile visibility tests**
+- [x] **Step 1: Write failing profile visibility tests**
 
 ```python
 def test_model_context_removes_empty_and_private_fields():
@@ -474,13 +474,13 @@ def test_model_context_removes_empty_and_private_fields():
     }
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_profile_context.py -v`
 
 Expected: FAIL because `ProfileUpdate` and `ProfileService` do not exist.
 
-- [ ] **Step 3: Define exact schemas**
+- [x] **Step 3: Define exact schemas**
 
 Create `ProfileUpdate` with optional fields for target roles/directions, desired work, focus skills, excluded directions, summary, education, skills, projects, employment, research, competitions, open source, strengths, availability, email, phone, address, and `field_visibility: dict[str, bool]`.
 
@@ -495,11 +495,11 @@ class ModelConfigUpdate(BaseModel):
     api_key: SecretStr | None = None
 ```
 
-- [ ] **Step 4: Implement repository, service, and routers**
+- [x] **Step 4: Implement repository, service, and routers**
 
 `ProfileService.model_context` must iterate model fields, include only visible non-empty values, and always exclude `email`, `phone`, and `address` unless visibility is explicitly `True`. Model config GET returns `api_key_configured: bool`, never the key. PUT stores the key through `SecretStore` and stores only `base_url`, `model`, timeout, and temperature in SQLite.
 
-- [ ] **Step 5: Run focused API and unit tests**
+- [x] **Step 5: Run focused API and unit tests**
 
 Run:
 
@@ -509,7 +509,7 @@ Run:
 
 Expected: profile round trip passes; private and empty fields are absent; model config response contains no API key.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add agent_app tests/unit/test_profile_context.py tests/api/test_profiles.py
@@ -530,7 +530,7 @@ git commit -m "feat: manage local candidate profile"
 - Consumes: `BatchCreate(limit, analysis_enabled, greeting_enabled, source_url)`.
 - Produces: `BatchService.create/get/transition`, `POST /api/v1/batches`, `GET /api/v1/batches/{id}`.
 
-- [ ] **Step 1: Write failing transition tests**
+- [x] **Step 1: Write failing transition tests**
 
 ```python
 import pytest
@@ -546,13 +546,13 @@ def test_batch_rejects_execution_before_approval():
         next_batch_status(BatchStatus.COLLECTED, "execute")
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_batch_transitions.py -v`
 
 Expected: FAIL because transition symbols do not exist.
 
-- [ ] **Step 3: Implement the transition table**
+- [x] **Step 3: Implement the transition table**
 
 ```python
 TRANSITIONS = {
@@ -569,11 +569,11 @@ TRANSITIONS = {
 
 Add explicit pause, security pause, resume, fail, and cancel transitions. Every invalid pair raises `InvalidBatchTransition(current, event)`.
 
-- [ ] **Step 4: Implement batch schemas, service, and routes**
+- [x] **Step 4: Implement batch schemas, service, and routes**
 
 `BatchCreate.limit` defaults to 10 and is constrained to 1-50. `source_url` must use HTTPS and host `www.zhipin.com` with path `/web/geek/jobs`. `POST /batches` persists `draft`; `GET` returns counts and `available_actions` derived from current status.
 
-- [ ] **Step 5: Run focused tests and full Phase 1 suite**
+- [x] **Step 5: Run focused tests and full Phase 1 suite**
 
 Run:
 
@@ -584,13 +584,13 @@ Run:
 
 Expected: focused and full suites pass.
 
-- [ ] **Step 6: Verify startup and local binding**
+- [x] **Step 6: Verify startup and local binding**
 
 Run: `.\.venv\Scripts\python.exe -m uvicorn agent_app.main:app --host 127.0.0.1 --port 8765`
 
 Expected: server starts on `http://127.0.0.1:8765`; `/api/health` returns 200. Stop with Ctrl+C.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add agent_app tests
@@ -609,3 +609,7 @@ git diff --check
 ```
 
 Expected: no failures; service/data code has meaningful branch coverage; userscript syntax remains valid. Record the exact test count in the implementation log before starting Phase 2.
+
+## Implementation Log
+
+- 2026-07-22 Phase 1 exit gate: 16 tests passed; `agent_app` coverage 93%; Python compile, userscript syntax, and `git diff --check` passed. Uvicorn bound to `127.0.0.1:8765`, `/api/health` returned 200, and the process was stopped after verification.
