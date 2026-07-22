@@ -132,6 +132,8 @@ class BrowserTaskRepository:
         payload: dict[str, object],
         idempotency_key: str,
         batch_id: str | None = None,
+        *,
+        commit: bool = True,
     ) -> BrowserTask:
         existing = self.get_by_idempotency_key(idempotency_key)
         if existing is not None:
@@ -146,8 +148,11 @@ class BrowserTaskRepository:
             progress_sequence=-1,
         )
         self.session.add(record)
-        self.session.commit()
-        self.session.refresh(record)
+        if commit:
+            self.session.commit()
+            self.session.refresh(record)
+        else:
+            self.session.flush()
         return record
 
     def take(

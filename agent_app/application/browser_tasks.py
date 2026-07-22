@@ -1,10 +1,13 @@
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from agent_app.domain.enums import BatchStatus
 from agent_app.domain.schemas import BrowserTaskResult, BrowserTaskType
-from agent_app.infrastructure.models import BrowserTask
+from agent_app.domain.transitions import next_batch_status
+from agent_app.infrastructure.models import AuditEvent, Batch, BrowserTask, JobSnapshot
 from agent_app.infrastructure.repositories import BrowserTaskRepository
 
 
@@ -24,6 +27,7 @@ class BrowserTaskService:
         now: Callable[[], datetime] | None = None,
         lease_seconds: int = 30,
     ) -> None:
+        self.session = session
         self.repository = BrowserTaskRepository(session)
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.lease_seconds = lease_seconds
@@ -80,6 +84,64 @@ class BrowserTaskService:
         self.repository.commit(task)
         return True
 
+    def _apply_collection_result(
+        self,
+        task: BrowserTask,
+        terminal: dict[str, object],
+    ) -> None:
+        batch = self.session.get(Batch, task.batch_id)
+        if batch is None:
+            raise BrowserTaskConflict("collection batch no longer exists")
+        if BatchStatus(batch.status) is not BatchStatus.COLLECTING:
+            raise BrowserTaskConflict("collection batch is not collecting")
+        snapshot_count = int(
+            self.session.scalar(
+                select(func.count(JobSnapshot.id)).where(
+                    JobSnapshot.batch_id == batch.id
+                )
+            )
+            or 0
+        )
+        result_payload = terminal.get("result") or {}
+        if not isinstance(result_payload, dict):
+            raise BrowserTaskConflict("collection result payload is invalid")
+        if terminal.get("ok") is True:
+            reported_count = result_payload.get("collected_count")
+            if not isinstance(reported_count, int) or reported_count != snapshot_count:
+                raise BrowserTaskConflict("collection result does not match snapshot count")
+            if snapshot_count > batch.limit:
+                raise BrowserTaskConflict("collection result exceeds batch limit")
+            batch.status = next_batch_status(
+                BatchStatus(batch.status), "collection_complete"
+            ).value
+            event_type = "collection_completed"
+        else:
+            event = (
+                "security_pause"
+                if terminal.get("error_code") == "paused_security"
+                else "fail"
+            )
+            batch.status = next_batch_status(BatchStatus(batch.status), event).value
+            event_type = (
+                "collection_paused_security"
+                if event == "security_pause"
+                else "collection_failed"
+            )
+        counts = dict(batch.counts or {})
+        counts["snapshots"] = snapshot_count
+        batch.counts = counts
+        self.session.add(
+            AuditEvent(
+                batch_id=batch.id,
+                event_type=event_type,
+                payload={
+                    "task_id": task.id,
+                    "snapshot_count": snapshot_count,
+                    "error_code": str(terminal.get("error_code") or ""),
+                },
+            )
+        )
+
     def resolve(
         self,
         task_id: str,
@@ -96,6 +158,8 @@ class BrowserTaskService:
             raise BrowserTaskConflict("a different terminal result already exists")
         if task.leased_by != worker_id:
             raise BrowserTaskConflict("task is not leased by the current worker")
+        if task.task_type == "collect_batch":
+            self._apply_collection_result(task, terminal)
         task.status = "resolved"
         task.result = terminal
         task.resolved_at = self.now()
