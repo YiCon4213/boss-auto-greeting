@@ -4,11 +4,12 @@
 
 ## 当前实施状态
 
-- Phase 1“本地服务与数据基础”已经完成并合入 `main`。
-- Phase 2“油猴桥接与批次采集”的五个实现任务已经提交：Alembic `0002`、浏览器租约协议、显式令牌 CLI、默认关闭的 `AgentBridge`、不可变快照、只采集不发送的 `BatchCollector` 和采集闭环均已落地。
-- 当前自动化门禁为 48 项 pytest 通过、`agent_app` 覆盖率 93%；原油猴独立入口契约与 JavaScript 语法检查通过。
-- Phase 2 真实浏览器退出门禁已于 2026-07-22 在用户本人 Chrome 通过：只读采集两个岗位并形成两个不可变快照，终态重复回放保持幂等，全程无聊天导航和发送；停止本地服务后独立模式正常。Phase 3 尚未开始。
-- 模型分析、审批工作台和安全发送尚未实现；当前代码不能用于 Agent 模式投递。
+- Phase 1“本地服务与数据基础”已通过 PR #1 合入 `main`；Phase 2“油猴桥接与批次采集”已通过 PR #2 合入 `main`。
+- Phase 3“分析、话术与审批工作台”的五个实现任务已在 `codex/phase-3-analysis-approval-workbench` 完成：Alembic `0003`、隐私安全模型适配、可关闭双评分、事实可追溯问候语、不可变人工批准队列和原生双栏工作台均已落地。
+- 当前自动化门禁为 81 项 pytest 通过、`agent_app` 覆盖率 92.42%；Python 编译、工作台与原油猴 JavaScript 语法、独立入口契约和差异检查通过。
+- Phase 2 真实浏览器退出门禁继续有效：用户本人 Chrome 两岗位只读采集、终态幂等、全程无聊天/无发送，停止服务后独立模式正常。
+- Phase 3 本机工作台退出门禁已通过：桌面双栏正常，390×844 窄屏无横向溢出且批准按钮完整可见；验证未访问 BOSS、未调用真实模型、未创建发送任务。
+- 安全发送、自然语言命令和外部子 Agent 契约尚未实现；当前代码不能用于 Agent 模式投递。
 
 ## 权威阅读顺序
 
@@ -18,7 +19,8 @@
 4. [roadmap.md](roadmap.md)：阶段状态、产物和退出条件。
 5. [实施计划索引](superpowers/plans/README.md)：各阶段详细计划与当前入口。
 6. [Phase 2 人工验证清单](manual-testing/phase-2-collection.md)：已通过的真实浏览器退出门禁记录。
-7. [new-session-handoff.md](new-session-handoff.md)：新会话恢复上下文和下一步操作。
+7. [Phase 3 工作台验证记录](manual-testing/phase-3-workbench.md)：自动化、桌面与窄屏退出门禁证据。
+8. [new-session-handoff.md](new-session-handoff.md)：新会话恢复上下文和下一步操作。
 
 ## 文档职责
 

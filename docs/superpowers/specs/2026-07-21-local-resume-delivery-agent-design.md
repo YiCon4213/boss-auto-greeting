@@ -327,6 +327,7 @@ draft -> collecting -> collected -> analyzing -> awaiting_approval
 
 - 服务只绑定 `127.0.0.1`。
 - 生成本机访问令牌，油猴桥接和外部本地调用使用不同权限范围。
+- 工作台首页使用 HttpOnly、SameSite=Strict 且路径限制为 `/api` 的本机会话 cookie 传递应用权限；前端 JavaScript 不读取或显示令牌。
 - CORS 只允许本地工作台来源。
 - API Key 使用操作系统秘密存储；若环境不支持，使用权限受限且被 Git 忽略的本地文件。
 - 前端 API 永不返回完整 API Key。
