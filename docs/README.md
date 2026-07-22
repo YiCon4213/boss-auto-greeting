@@ -4,10 +4,11 @@
 
 ## 当前实施状态
 
-- Phase 1“本地服务与数据基础”已经完成：FastAPI 应用、SQLite/Alembic、应用与浏览器双令牌、画像与模型设置、批次基础状态机及 `/api/v1` 骨架已经落地。
-- Phase 1 自动化门禁为 16 项测试通过、`agent_app` 覆盖率 93%；原油猴脚本语法检查通过，Phase 1 没有修改油猴脚本。
-- 下一阶段是 Phase 2“油猴桥接与批次采集”。不得在 Phase 1 分支未合并或本地 `main` 未同步时直接开始新的阶段分支。
-- 真实 BOSS 浏览器采集、审批和发送尚未实现；当前代码不能用于 Agent 模式投递。
+- Phase 1“本地服务与数据基础”已经完成并合入 `main`。
+- Phase 2“油猴桥接与批次采集”的五个实现任务已经提交：Alembic `0002`、浏览器租约协议、显式令牌 CLI、默认关闭的 `AgentBridge`、不可变快照、只采集不发送的 `BatchCollector` 和采集闭环均已落地。
+- 当前自动化门禁为 45 项 pytest 通过、`agent_app` 覆盖率 93%；原油猴独立入口契约与 JavaScript 语法检查通过。
+- Phase 2 真实浏览器退出门禁仍待执行，必须在用户本人登录环境完成两岗位采集与独立模式回归。在此之前 Phase 2 不标记完成，也不开始 Phase 3。
+- 模型分析、审批工作台和安全发送尚未实现；当前代码不能用于 Agent 模式投递。
 
 ## 权威阅读顺序
 
@@ -16,7 +17,8 @@
 3. [设计规格](superpowers/specs/2026-07-21-local-resume-delivery-agent-design.md)：架构、安全边界和数据流。
 4. [roadmap.md](roadmap.md)：阶段状态、产物和退出条件。
 5. [实施计划索引](superpowers/plans/README.md)：各阶段详细计划与当前入口。
-6. [new-session-handoff.md](new-session-handoff.md)：新会话恢复上下文和下一步操作。
+6. [Phase 2 人工验证清单](manual-testing/phase-2-collection.md)：当前唯一未通过的退出门禁。
+7. [new-session-handoff.md](new-session-handoff.md)：新会话恢复上下文和下一步操作。
 
 ## 文档职责
 

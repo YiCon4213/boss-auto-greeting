@@ -3,14 +3,16 @@
 
 ## 本地简历投递 Agent 开发状态
 
-项目正在保留油猴独立模式的前提下，增加本机 FastAPI + SQLite Agent。当前 Phase 1 已完成：
+项目正在保留油猴独立模式的前提下，增加本机 FastAPI + SQLite Agent。Phase 2 代码与自动化验证已经完成，真实浏览器退出门禁仍待用户本人登录环境验证：
 
-- 本地服务默认绑定 `127.0.0.1:8765`。
-- Alembic `0001`、11 张基础业务表、应用/浏览器双令牌已经建立。
-- 已提供画像、模型非敏感设置和批次基础 `/api/v1`。
-- 16 项自动化测试通过，`agent_app` 覆盖率 93%。
+- 本地服务默认绑定 `127.0.0.1:8765`，Alembic head 为 `0002`。
+- 浏览器任务支持白名单类型、30 秒租约、worker 所有权、进度序号和幂等终态。
+- `python -m agent_app.cli show-browser-token` 只在本机终端显式显示浏览器令牌，HTTP API 不回显。
+- 油猴新增默认关闭的 `AgentBridge` 和只采集不发送的 `BatchCollector`；独立模式入口保持原实现。
+- 强岗位 ID、JD 指纹、不可变快照和重复审计已经落地。
+- 45 项自动化测试通过，`agent_app` 覆盖率 93%，Userscript 语法检查通过。
 
-当前尚未实现 Agent 模式的浏览器采集、模型分析、审批工作台和安全发送；原 `zhipin-auto-greeting.user.js` 仍按独立模式直接安装运行。开发和安全约束请先阅读 [AGENTS.md](AGENTS.md)，当前阶段入口见 [docs/README.md](docs/README.md)。
+Phase 2 尚不能标记完成，必须按 [两岗位人工验证清单](docs/manual-testing/phase-2-collection.md) 证明无聊天导航、无发送、快照与批次状态正确且独立模式仍可用。模型分析、审批工作台和安全发送尚未实现，当前代码不能用于 Agent 模式投递。开发和安全约束请先阅读 [AGENTS.md](AGENTS.md)，当前阶段入口见 [docs/README.md](docs/README.md)。
 
 本地开发验证：
 

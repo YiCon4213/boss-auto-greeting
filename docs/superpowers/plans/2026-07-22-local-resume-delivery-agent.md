@@ -27,7 +27,7 @@
 该规格包含四个可独立验收的子系统，必须按顺序执行：
 
 - [x] [Phase 1：本地服务与数据基础](2026-07-22-agent-foundation.md)（16 项测试，93% 覆盖率）
-- [ ] [Phase 2：油猴桥接与批次采集](2026-07-22-browser-bridge-collection.md)
+- [ ] [Phase 2：油猴桥接与批次采集](2026-07-22-browser-bridge-collection.md)（实现与 45 项自动化测试完成，真实浏览器退出门禁待验证）
 - [ ] [Phase 3：分析、话术与审批工作台](2026-07-22-analysis-approval-workbench.md)
 - [ ] [Phase 4：安全发送、自然语言与外部调用](2026-07-22-delivery-command-integration.md)
 
