@@ -12,7 +12,7 @@
 - 强岗位 ID、JD 指纹、不可变快照和重复审计已经落地。
 - 45 项自动化测试通过，`agent_app` 覆盖率 93%，Userscript 语法检查通过。
 
-Phase 2 尚不能标记完成，必须按 [两岗位人工验证清单](docs/manual-testing/phase-2-collection.md) 证明无聊天导航、无发送、快照与批次状态正确且独立模式仍可用。模型分析、审批工作台和安全发送尚未实现，当前代码不能用于 Agent 模式投递。开发和安全约束请先阅读 [AGENTS.md](AGENTS.md)，当前阶段入口见 [docs/README.md](docs/README.md)。
+Phase 2 尚不能标记完成。2026-07-22 首次真实浏览器验证在打开岗位列表时触发 BOSS“安全验证”，已按边界立即停止；必须在用户通过正常授权流程恢复访问后，重新按 [两岗位人工验证清单](docs/manual-testing/phase-2-collection.md) 证明无聊天导航、无发送、快照与批次状态正确且独立模式仍可用。模型分析、审批工作台和安全发送尚未实现，当前代码不能用于 Agent 模式投递。开发和安全约束请先阅读 [AGENTS.md](AGENTS.md)，当前阶段入口见 [docs/README.md](docs/README.md)。
 
 本地开发验证：
 

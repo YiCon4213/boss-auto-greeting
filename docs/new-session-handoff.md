@@ -6,7 +6,7 @@
 
 Phase 1 已合入 `main`。Phase 2“油猴桥接与批次采集”的五个实现任务已经在 `codex/phase-2-browser-bridge-collection` 上完成并独立提交；45 项 pytest、93% 覆盖率、Alembic `0002 (head)`、Python 编译、Userscript 语法和差异检查均通过。
 
-Phase 2 仍未完成：当前环境没有可控制的 Chrome/Tampermonkey 窗口，尚未执行本人登录环境的两岗位采集和独立模式回归。不得把自动化契约当成人工证据，也不得开始 Phase 3。
+Phase 2 仍未完成：2026-07-22 已连接用户本人 Chrome，但岗位列表加载后立即出现 BOSS“安全验证：当前 IP 地址可能存在异常访问行为”。验证已按边界停止，未点击验证按钮、未创建本地任务、未进入聊天或发送；两岗位采集和独立模式回归尚未执行。不得把自动化契约或这次阻塞当成人工通过证据，也不得开始 Phase 3。
 
 ## 已实现边界
 
@@ -22,7 +22,7 @@ Phase 2 仍未完成：当前环境没有可控制的 Chrome/Tampermonkey 窗口
 
 1. 阅读 `AGENTS.md`、`docs/README.md`、`docs/current-state-analysis.md` 和 Phase 2 计划。
 2. 检查 Git 状态和 `codex/phase-2-browser-bridge-collection` 的五个功能提交，保留任何已有未提交改动。
-3. 按 `docs/manual-testing/phase-2-collection.md` 在用户本人已登录、可正常手动浏览的 BOSS 环境执行两岗位采集。
+3. 等用户通过正常授权流程恢复岗位列表访问后，按 `docs/manual-testing/phase-2-collection.md` 从头重跑两岗位采集；不得自动处理或绕过安全验证。
 4. 记录无聊天导航、无消息发送、两个不可变快照、`collected` 批次状态、重复/刷新幂等和服务停止后的独立模式证据。
 5. 遇到验证码、登录失效或安全校验只确认整批暂停，不处理、不绕过。
 6. 证据全部通过后，勾选 Task 2 Step 7、Phase 2 与总计划复选框，更新本文件、索引和路线图，再做 Phase 2 完成提交。

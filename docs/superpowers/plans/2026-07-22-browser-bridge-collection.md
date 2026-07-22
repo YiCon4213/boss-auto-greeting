@@ -519,4 +519,4 @@ Run the manual checklist with a two-job batch in the user's logged-in browser. E
 - `098aae5`：幂等 `/collect`、快照计数校验、原子批次终结与人工验证清单。
 - 自动化证据：45 项 pytest 通过，`agent_app` 覆盖率 93%，Alembic `0002 (head)`，Python `compileall`、Userscript `node --check` 和 `git diff --check` 通过。
 - 非阻塞警告：FastAPI/Starlette `TestClient` 有一条既有第三方弃用警告。
-- 阻塞门禁：Task 2 Step 7 和 Phase 2 Exit Gate 的本人登录浏览器验证尚未执行，Phase 2 与总计划复选框保持未完成，禁止开始 Phase 3。
+- 阻塞门禁：2026-07-22 首次真实浏览器验证在岗位列表加载时触发 BOSS“安全验证”，已立即停止且未点击验证按钮；本地任务尚未创建。Task 2 Step 7、两岗位采集和 Phase 2 Exit Gate 仍未完成，Phase 2 与总计划复选框保持未勾选，禁止开始 Phase 3。
