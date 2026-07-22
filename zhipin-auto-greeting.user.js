@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         BOSS直聘自动沟通助手
+// @name         BOSS直聘自动沟通助手2
 // @namespace    local.codex.zhipin
 // @version      0.1.8
 // @description  在 BOSS 直聘搜索结果页自动选择岗位、发送常用语或自定义问候语，并记录岗位数据。
@@ -73,6 +73,7 @@
   ];
   const BOSS_ACTIVE_BUILTIN_KEYS = new Set(BOSS_ACTIVE_BUILTIN_OPTIONS.map((item) => normalizeBossActiveText(item)));
   const FEATURE_BLOCK_DEFINITIONS = [
+    { id: 'agent', title: '本地 Agent', defaultEnabled: true },
     { id: 'greeting', title: '打招呼配置', defaultEnabled: true, readonly: true },
     { id: 'strategy', title: '运行策略', defaultEnabled: true, readonly: true },
     { id: 'companyFilter', title: '公司筛选', defaultEnabled: true },
