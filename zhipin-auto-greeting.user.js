@@ -4988,8 +4988,9 @@
       const randomPart = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      config = saveConfig({ agentWorkerId: `browser-${randomPart}` });
-      return config.agentWorkerId;
+      const workerId = `browser-${randomPart}`;
+      saveConfig({ agentWorkerId: workerId });
+      return workerId;
     },
 
     request(method, path, body) {
