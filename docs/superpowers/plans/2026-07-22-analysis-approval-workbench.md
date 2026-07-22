@@ -10,6 +10,8 @@
 
 **Prerequisite:** Phase 1 与 Phase 2 已完成、测试通过并分别提交。
 
+**Compatibility baseline:** 复用 Phase 1 已建立的 `Analysis`、`Greeting`、`ApprovalVersion`、`DeliveryItem` 表和字符串 UUID；复用 Phase 2 的浏览器任务租约。Phase 3 的迁移编号从 `0003` 开始，不创建同义重复表。模型配置字段使用现有 `ModelConfig.model`，画像载荷复用 `ProfileService.model_context()` 的可见性规则。
+
 ---
 
 ## Task 1: 定义模型请求、结构化响应与脱敏边界
@@ -76,7 +78,7 @@ class LlmClient(Protocol):
         raise NotImplementedError
 ```
 
-`build_model_profile()` 仅允许 `education`、`target_roles`、`skills`、`projects`、`research`、`competitions`、`work_experience`、`availability`、`arrival_time`、`strengths`、`extra_model_context`；空字符串、空列表和 `None` 全部剔除。`OpenAICompatibleClient` 使用单一共享 `httpx.AsyncClient`、30 秒超时、一次请求不自动重试，并通过配置的 `model_name` 调用。
+模型画像直接使用 `ProfileService.model_context()`，沿用 Phase 1 的字段可见性和空值剔除规则，禁止另建第二套白名单。`OpenAICompatibleClient` 使用单一共享 `httpx.AsyncClient`、30 秒超时，并通过现有配置字段 `model` 调用。网络错误、超时或非法 JSON 最多允许一次结构化重试；错误文本不得包含原始响应、API Key 或隐私字段。
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -97,7 +99,7 @@ Expected: tests pass；提交只包含模型契约、适配器和测试。
 - Modify: `agent_app/infrastructure/models.py`
 - Modify: `agent_app/infrastructure/repositories.py`
 - Create: `tests/unit/test_analysis_service.py`
-- Create: `alembic/versions/0002_analysis_and_greetings.py`
+- Create: `alembic/versions/0003_analysis_approval_integrity.py`
 
 - [ ] **Step 1: 写业务规则失败测试**
 
@@ -111,7 +113,7 @@ assert recommendation_for(60) == "recommend"
 assert recommendation_for(100) == "recommend"
 ```
 
-另外验证：`analysis_enabled=False` 时不调用模型、目标分为 `None` 且默认选中；个人分不改变 `selected_by_default`；地点和经验不进入目标方向提示词；简历未出现 JD 技能只进入 `cautions`，不得成为排除条件；模型失败时状态为 `analysis_failed`、职位仍可人工选择。
+另外验证：`analysis_enabled=False` 时不调用模型、目标分为 `None` 且默认选中；个人分不改变 `selected_by_default`；地点和经验不进入目标方向提示词；简历未出现 JD 技能只进入 `cautions`，不得成为排除条件。模型失败时状态为 `analysis_failed`，该职位可见但不可选择、不可批准；用户必须成功重试，或显式关闭分析后重新执行确定性跳过，才能进入审批。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -123,7 +125,7 @@ Expected: import error 或断言失败。
 
 - [ ] **Step 3: 添加领域结构和数据库字段**
 
-`JobSnapshot` 增加 `analysis_status`；新增 `JobAnalysis`，字段固定为 `id`、`job_snapshot_id`、`target_score`、`personal_score`、`recommendation`、`target_reasons_json`、`personal_matches_json`、`cautions_json`、`model_name`、`prompt_version`、`created_at`。迁移 `0002` 只新增表/列，不重写已有快照。
+复用现有 `Analysis.payload` 保存经 Pydantic 校验的目标分、个人分、推荐档位、原因、风险、模型名和提示词版本；复用其 `status` 表达完成、跳过或失败。迁移 `0003` 只补充审批所需的唯一约束和索引（至少保证 `approval_versions(batch_id, version)` 唯一），不创建 `JobAnalysis`、`GreetingDraft`、`Approval` 或 `ApprovedDeliveryItem` 等同义表，也不重写已有数据。
 
 - [ ] **Step 4: 实现 AnalysisService**
 
@@ -131,10 +133,10 @@ Expected: import error 或断言失败。
 class AnalysisService:
     async def analyze_snapshot(
         self,
-        snapshot_id: int,
+        snapshot_id: str,
         *,
         analysis_enabled: bool,
-    ) -> JobAnalysisView:
+    ) -> AnalysisView:
         raise NotImplementedError
 ```
 
@@ -145,7 +147,7 @@ class AnalysisService:
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_analysis_service.py -q
-git add agent_app/application/analysis.py agent_app/domain/enums.py agent_app/domain/schemas.py agent_app/infrastructure/models.py agent_app/infrastructure/repositories.py alembic/versions/0002_analysis_and_greetings.py tests/unit/test_analysis_service.py
+git add agent_app/application/analysis.py agent_app/domain/enums.py agent_app/domain/schemas.py agent_app/infrastructure/models.py agent_app/infrastructure/repositories.py alembic/versions/0003_analysis_approval_integrity.py tests/unit/test_analysis_service.py
 git commit -m "feat: analyze job fit with optional filtering"
 ```
 
@@ -161,7 +163,7 @@ Expected: migration succeeds and tests pass。
 
 - [ ] **Step 1: 写问候语约束失败测试**
 
-固定基础模板为产品规格中的文本，验证：关闭模型或模型失败时返回基础模板；岗位要求技能、时间或经验且画像有对应事实时允许补充；画像没有事实时不得声称具备；输出去除电话、邮箱和地址；最终文本允许 20–500 字且不得为空。
+固定基础模板为产品规格中的文本，验证：关闭问候语模型时返回基础模板；模型开启但最终失败时标记 `generation_failed` 且不可批准；用户可显式关闭问候语模型后重新生成基础模板。岗位要求技能、时间或经验且画像有对应事实时允许补充；画像没有事实时不得声称具备；输出去除电话、邮箱和地址；最终文本允许 20–500 字且不得为空。
 
 ```python
 assert result.source in {"model", "base_template", "edited"}
@@ -179,11 +181,11 @@ Expected: `GreetingService` 尚不存在。
 
 - [ ] **Step 3: 实现生成和事实白名单校验**
 
-`GreetingService.generate(snapshot_id)` 的模型输入仅含基础模板、JD 摘要、岗位名称、公司名称、非空画像和已保存分析。系统指令要求模仿模板自然、直接、礼貌的中文风格，优先补充技能/时间/经验的真实匹配点，不虚构、不拉长。模型返回的 `used_facts` 必须逐项存在于画像白名单；任一事实无法验证时丢弃模型文本并回退基础模板。
+`GreetingService.generate(snapshot_id: str)` 的模型输入仅含基础模板、JD 摘要、岗位名称、公司名称、非空画像和已保存分析。系统指令要求模仿模板自然、直接、礼貌的中文风格，优先补充技能/时间/经验的真实匹配点，不虚构、不拉长。模型返回的 `used_facts` 必须逐项存在于画像白名单；任一事实无法验证时标记 `generation_failed`，不得静默回退并进入审批。
 
 - [ ] **Step 4: 保存可编辑草稿**
 
-新增 `GreetingDraft`：`id`、`job_snapshot_id`、`text`、`source`、`used_facts_json`、`edited_at`、`approved_at`、`created_at`。编辑只更新未批准草稿；批准由下一任务复制文本，禁止原地改变批准内容。
+复用现有 `Greeting`：模型原文写入 `generated_text`，用户编辑结果写入 `final_text`，来源、事实引用、错误码和时间写入 `payload`。编辑只更新未批准记录；批准由下一任务复制文本，禁止原地改变批准内容。
 
 - [ ] **Step 5: 运行测试并提交**
 
@@ -217,7 +219,7 @@ PATCH /api/v1/batches/{id}/drafts/{snapshotId} -> 200
 POST /api/v1/batches/{id}/approve              -> 200
 ```
 
-批准请求体为 `{"items":[{"snapshot_id":1,"selected":true,"greeting":"..."}]}`。验证未分析完成返回 409；空选择允许批准并形成空完成队列；重复批准返回同一个 `approval_id`；批准后编辑返回 409；未批准批次不得创建可领取发送任务。
+批准请求体为 `{"items":[{"snapshot_id":"<uuid>","selected":true,"greeting":"..."}]}`。验证未分析完成、`analysis_failed` 或 `generation_failed` 返回 409；空选择允许批准并形成空完成队列；重复批准返回同一个 `approval_version_id`；批准后编辑返回 409；未批准批次不得创建可领取发送任务。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -233,7 +235,7 @@ Expected: routes return 404。
 
 - [ ] **Step 4: 实现不可变批准队列**
 
-新增 `Approval` 和 `ApprovedDeliveryItem`。在一个数据库事务中锁定批次、复制每个被选中的强 ID、职位快照摘要、最终问候语、顺序号和批准时间；批准完成后状态为 `approved`。发送层只能读取 `ApprovedDeliveryItem`，不能读取后来变化的草稿生成发送文本。
+复用现有 `ApprovalVersion` 和 `DeliveryItem`。在一个数据库事务中锁定批次、递增版本，并把每个被选中的强 ID、职位快照摘要、最终问候语、顺序号和批准时间复制到不可变的批准版本及队列项；批准完成后状态为 `approved`。发送层只能读取对应 `approval_version_id` 的 `DeliveryItem.final_greeting`，不能读取后来变化的 `Greeting` 生成发送文本。
 
 - [ ] **Step 5: 运行 API 与回归测试并提交**
 
@@ -257,7 +259,7 @@ Expected: tests pass。
 
 - [ ] **Step 1: 写静态页面与安全契约失败测试**
 
-验证 `/` 返回工作台，包含批次状态、分析开关、左侧职位列表、右侧 JD/匹配原因/风险/问候语编辑区以及“批准并开始发送”按钮；脚本不得包含 `innerHTML =`、远程 CDN 或 API Key；批准按钮仅在批次 `awaiting_approval` 时启用。
+验证 `/` 返回工作台，包含批次状态、分析开关、左侧职位列表、右侧 JD/匹配原因/风险/问候语编辑区以及“批准本批次”按钮；脚本不得包含 `innerHTML =`、远程 CDN 或 API Key；批准按钮仅在批次 `awaiting_approval` 且所有选中项均可批准时启用。Phase 3 不提供执行发送按钮。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -273,7 +275,7 @@ Expected: `/` returns 404 或资源不存在。
 
 - [ ] **Step 4: 接入任务轮询和审批 API**
 
-页面每 2 秒轮询当前批次；离开审批状态后停止轮询。点击批准时禁用按钮，提交当前选择和文本；成功后进入发送进度视图，失败时恢复按钮并显示可读错误，不自动重复提交。
+页面每 2 秒轮询当前批次；离开审批状态后停止轮询。点击批准时禁用按钮，提交当前选择和文本；成功后显示“已批准，等待用户在 Phase 4 显式开始执行”，失败时恢复按钮并显示可读错误，不自动重复提交。
 
 - [ ] **Step 5: 测试、全阶段验证并提交**
 
@@ -296,4 +298,5 @@ Expected: all tests pass；两个 JavaScript 文件语法检查成功；`git dif
 - [ ] 空画像字段和隐私字段不进入模型请求。
 - [ ] 批准后文本与强 ID 不可变，任何发送入口都尚不能绕过批准。
 - [ ] 工作台在窄屏可用，所有动态内容安全渲染。
+- [ ] 按 `AGENTS.md` 检查并更新当前状态、路线图、计划索引、交接文档，安全清理完全过时且无独有证据的过程文件。
 - [ ] `git status --short` 为空，然后进入 Phase 4。

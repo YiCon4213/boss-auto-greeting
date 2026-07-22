@@ -17,6 +17,14 @@
 - 采集阶段禁止调用 `findChatButton`、`clickElement(chatButton)` 或 `GreetingService.sendCurrent`。
 - 快照必须包含至少一个可靠强 ID；只有弱签名的岗位记录为不可投递快照。
 
+## Phase 1 Compatibility Baseline
+
+- 统一使用 `http://127.0.0.1:8765`，不得改为其它默认端口。
+- 复用现有 `BrowserTask` 和 `JobSnapshot`；Alembic 新迁移编号为 `0002_browser_task_leasing`。
+- 业务 ID 均为字符串；测试沿用可注入的 `session_factory` 和 `FileSecretStore`。
+- 浏览器令牌已经存在于 `SecretStore`，HTTP API 不得回显；本阶段增加显式本机 CLI 供用户主动读取。
+- Phase 1 的 16 项测试必须持续通过。
+
 ---
 
 ### Task 1: Implement Browser Task Leasing and Idempotency
@@ -24,15 +32,19 @@
 **Files:**
 - Create: `agent_app/application/browser_tasks.py`
 - Create: `agent_app/api/routers/browser.py`
+- Create: `agent_app/cli.py`
+- Create: `alembic/versions/0002_browser_task_leasing.py`
 - Create: `tests/unit/test_browser_task_leases.py`
+- Create: `tests/unit/test_token_cli.py`
 - Create: `tests/api/test_browser_tasks.py`
 - Modify: `agent_app/domain/schemas.py`
+- Modify: `agent_app/infrastructure/models.py`
 - Modify: `agent_app/infrastructure/repositories.py`
 - Modify: `agent_app/main.py`
 
 **Interfaces:**
 - Consumes: browser-scoped token and `BrowserTaskCreate(type, payload, idempotency_key)`.
-- Produces: `BrowserTaskService.create/take/ack/progress/resolve`, `/api/v1/browser/*`.
+- Produces: `BrowserTaskService.create/take/ack/progress/resolve`, `/api/v1/browser/*` and `python -m agent_app.cli show-browser-token`.
 
 - [ ] **Step 1: Write failing lease tests**
 
@@ -58,9 +70,11 @@ def test_duplicate_idempotency_key_returns_existing_task(browser_task_service):
     assert second.id == first.id
 ```
 
+另外在 `tests/unit/test_token_cli.py` 写失败测试：显式 `show-browser-token` 只输出注入的浏览器令牌；未知命令非零退出；输出不得包含应用令牌或模型密钥。
+
 - [ ] **Step 2: Run and verify failure**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_browser_task_leases.py -v`
+Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_browser_task_leases.py tests/unit/test_token_cli.py -v`
 
 Expected: FAIL because `BrowserTaskService` does not exist.
 
@@ -97,7 +111,9 @@ class BrowserTaskResult(BaseModel):
 
 - [ ] **Step 4: Implement leases and idempotent resolution**
 
-`take(worker_id)` selects the oldest pending or expired leased task, atomically sets `leased_by`, `lease_expires_at = now + 30 seconds`, and increments `attempt_count`. `ack` only accepts the active worker. `progress` ignores duplicate or lower sequence values. `resolve` is idempotent: the first terminal result wins and later identical submissions return the stored result without changing audit state.
+迁移 `0002_browser_task_leasing` 只为现有 `browser_tasks` 增加 `leased_by`、`attempt_count`、`progress_sequence`、`acked_at` 和 `resolved_at`；不得重建或改名 Phase 1 表。`take(worker_id)` 使用带状态和租约条件的原子 `UPDATE` 领取最早 pending 或已过期任务，设置 `lease_expires_at = now + 30 seconds` 并增加 `attempt_count`；SQLite 竞争失败时重新查询，不依赖进程内锁。`ack` 只接受当前 worker，`progress` 忽略重复或更小序号，`resolve` 采用“首个终态结果获胜”的幂等规则。
+
+`agent_app.cli` 只支持显式 `show-browser-token` 命令，从同一 `SecretStore` 读取浏览器令牌并输出到当前终端；不得提供 HTTP 令牌读取接口，不得输出应用令牌、模型 API Key 或其它密钥。CLI 测试注入 `FileSecretStore`，不访问系统 keyring。
 
 - [ ] **Step 5: Implement exact browser endpoints**
 
@@ -116,15 +132,17 @@ Return 204 when no task exists, 404 for unknown tasks, and 409 for wrong worker 
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/unit/test_browser_task_leases.py tests/api/test_browser_tasks.py -v
+.\.venv\Scripts\alembic.exe upgrade head
+.\.venv\Scripts\alembic.exe current
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_browser_task_leases.py tests/unit/test_token_cli.py tests/api/test_browser_tasks.py -v
 ```
 
-Expected: lease expiry, worker ownership, progress ordering, token scope, and idempotent result tests pass.
+Expected: Alembic reports `0002 (head)`；lease expiry、条件领取、worker ownership、progress ordering、token scope、CLI secret isolation 和 idempotent result tests pass.
 
 - [ ] **Step 7: Commit**
 
 ```powershell
-git add agent_app tests/unit/test_browser_task_leases.py tests/api/test_browser_tasks.py
+git add agent_app alembic/versions/0002_browser_task_leasing.py tests/unit/test_browser_task_leases.py tests/unit/test_token_cli.py tests/api/test_browser_tasks.py
 git commit -m "feat: add leased browser task protocol"
 ```
 
@@ -181,7 +199,7 @@ agentBrowserToken: '',
 agentWorkerId: '',
 ```
 
-Add a small “本地 Agent” section with enable switch, service URL, browser token, connection indicator, and “检查连接”. Keep the existing start button mapped to standalone automation when the switch is off.
+Add a small “本地 Agent” section with enable switch, service URL, browser token, connection indicator, and “检查连接”. 浏览器令牌由用户在本机显式运行 `.\.venv\Scripts\python.exe -m agent_app.cli show-browser-token` 后手工填入；不得从网页接口、日志或数据库读取明文。Keep the existing start button mapped to standalone automation when the switch is off.
 
 - [ ] **Step 4: Implement a whitelist-only AgentBridge**
 
@@ -467,7 +485,7 @@ Expected: FAIL because `/collect` or completion coordination is missing.
 
 - [ ] **Step 4: Add the manual Phase 2 checklist**
 
-Document exact steps: start service, enable Agent mode, load a BOSS list, create a limit-2 batch, verify two cards are selected without opening chat, confirm SQLite contains two snapshots, disable Agent mode, and confirm standalone start still works.
+Document exact steps: migrate to `0002`, start service on `127.0.0.1:8765`, use the explicit CLI to obtain the browser token, enable Agent mode, load a BOSS list, create a limit-2 batch, verify two cards are selected without opening chat, confirm SQLite contains two snapshots, disable Agent mode, stop the service, and confirm standalone start still works without any request to port 8765.
 
 - [ ] **Step 5: Run Phase 2 verification**
 
@@ -490,4 +508,4 @@ git commit -m "feat: complete browser collection batches"
 
 ## Phase 2 Exit Gate
 
-Run the manual checklist with a two-job batch in the user's logged-in browser. Evidence must show: no chat navigation, no sent message, two immutable snapshots, correct batch state, and standalone mode still starts with the Agent service stopped.
+Run the manual checklist with a two-job batch in the user's logged-in browser. Evidence must show: no chat navigation, no sent message, two immutable snapshots, correct batch state, and standalone mode still starts with the Agent service stopped. Before the Phase 2 completion commit, update this plan's checkboxes and implementation log, `docs/current-state-analysis.md`, `docs/roadmap.md`, `docs/new-session-handoff.md`, `docs/README.md`, and any affected README instructions; remove only superseded process files under the `AGENTS.md` documentation cleanup rules.

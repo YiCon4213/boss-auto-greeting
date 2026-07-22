@@ -26,12 +26,20 @@
 
 该规格包含四个可独立验收的子系统，必须按顺序执行：
 
-1. [Phase 1：本地服务与数据基础](2026-07-22-agent-foundation.md)
-2. [Phase 2：油猴桥接与批次采集](2026-07-22-browser-bridge-collection.md)
-3. [Phase 3：分析、话术与审批工作台](2026-07-22-analysis-approval-workbench.md)
-4. [Phase 4：安全发送、自然语言与外部调用](2026-07-22-delivery-command-integration.md)
+- [x] [Phase 1：本地服务与数据基础](2026-07-22-agent-foundation.md)（16 项测试，93% 覆盖率）
+- [ ] [Phase 2：油猴桥接与批次采集](2026-07-22-browser-bridge-collection.md)
+- [ ] [Phase 3：分析、话术与审批工作台](2026-07-22-analysis-approval-workbench.md)
+- [ ] [Phase 4：安全发送、自然语言与外部调用](2026-07-22-delivery-command-integration.md)
 
 不要跨阶段并行修改共享状态机。只有当前阶段的最终验收通过并提交后，才进入下一阶段。
+
+## Phase 1 Locked Baseline
+
+- 服务端口统一为 `127.0.0.1:8765`；后续计划不得引入第二个默认端口。
+- Alembic `0001` 已创建 11 张基础表；Phase 2 从 `0002` 开始，后续阶段复用已有 `analyses`、`greetings`、`approval_versions` 和 `delivery_items`。
+- 所有业务 ID 为 32 位字符串 UUID，不使用整数 ID 假设。
+- `create_app()` 已支持注入 `session_factory` 和 `SecretStore`；测试继续使用临时 SQLite 和文件密钥库。
+- 应用令牌与浏览器令牌已经分离；任何 HTTP API 都不得返回明文令牌。
 
 ## Locked File Structure
 

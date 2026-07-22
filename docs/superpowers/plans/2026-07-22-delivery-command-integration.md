@@ -10,6 +10,8 @@
 
 **Prerequisite:** Phase 1–3 已完成、测试通过并提交。
 
+**Compatibility baseline:** 固定使用 `127.0.0.1:8765` 和字符串 UUID；复用 Phase 1 的 `Batch`、`DeliveryItem`、`BrowserTask`，以及 Phase 2 已实现的租约/ack/progress/result API。`DeliveryItem` 保存业务发送状态，`BrowserTask` 保存任务租约状态，两者不得混用。Phase 4 新迁移从 `0004` 开始。
+
 ---
 
 ## Task 1: 实现发送状态机和浏览器任务 API
@@ -22,25 +24,29 @@
 - Modify: `agent_app/infrastructure/models.py`
 - Modify: `agent_app/infrastructure/repositories.py`
 - Modify: `agent_app/main.py`
+- Modify: `agent_app/web/index.html`
+- Modify: `agent_app/web/app.js`
 - Create: `tests/unit/test_delivery_service.py`
 - Create: `tests/api/test_delivery_api.py`
 
 - [ ] **Step 1: 写状态机失败测试**
 
-允许的单项状态固定为 `approved -> leased -> locating -> sending -> sent|skipped|failed|paused`；批次为 `approved -> delivering -> completed|paused`。验证未批准批次启动返回 409，已发送项不能再次租赁，过期租约可重新领取，同一 `idempotency_key` 的结果重复上报不重复计数。
+沿用现有单项状态：`approved -> locating -> revalidating -> sending -> sent|already_contacted|unavailable|identity_mismatch|send_failed|cancelled`；沿用现有批次状态：`approved -> executing -> completed|paused|paused_security|failed|cancelled`。`leased` 属于 `BrowserTask` 而不是 `DeliveryItem`。验证未批准批次执行返回 409，已发送项不能再次创建任务，过期任务由 Phase 2 租约协议重新领取，同一 `idempotency_key` 的结果重复上报不重复计数。
 
 - [ ] **Step 2: 写 API 失败测试**
 
 ```text
-POST /api/v1/batches/{id}/delivery/start      -> 200
-POST /api/v1/browser/tasks/lease              -> 200 or 204
-POST /api/v1/browser/tasks/{taskId}/progress  -> 200
-POST /api/v1/browser/tasks/{taskId}/result    -> 200
-POST /api/v1/batches/{id}/delivery/resume     -> 200
-GET  /api/v1/batches/{id}/delivery/report     -> 200
+POST /api/v1/batches/{id}/execute                    -> 200
+POST /api/v1/batches/{id}/pause                      -> 200
+POST /api/v1/batches/{id}/resume                     -> 200
+GET  /api/v1/batches/{id}/report                     -> 200
+GET  /api/v1/browser/tasks/next?worker_id=<id>       -> 200 or 204
+POST /api/v1/browser/tasks/{taskId}/ack               -> 200
+POST /api/v1/browser/tasks/{taskId}/progress          -> 200
+POST /api/v1/browser/tasks/{taskId}/result            -> 200
 ```
 
-租赁响应只能包含任务 ID、批准文本、强 ID、预期公司/岗位摘要、合理等待配置和过期时间，不得包含任意 JavaScript 或 CSS 选择器代码。
+Phase 2 的任务领取响应只能增加执行所需的批准文本、强 ID、预期公司/岗位摘要、合理等待配置和过期时间，不得包含任意 JavaScript 或 CSS 选择器代码。应用令牌负责显式执行/暂停/恢复，浏览器令牌只可领取和回报任务。
 
 - [ ] **Step 3: 运行测试并确认失败**
 
@@ -54,7 +60,7 @@ Expected: service/route missing。
 
 ```python
 class DeliveryService:
-    def start(self, batch_id: int) -> DeliveryBatchView:
+    def start(self, batch_id: str) -> DeliveryBatchView:
         raise NotImplementedError
 
     def lease_next(self, worker_id: str) -> BrowserTaskView | None:
@@ -64,13 +70,15 @@ class DeliveryService:
         raise NotImplementedError
 ```
 
-将占位异常替换为事务实现：每批同一时刻最多一个活动租约；`sent`、`already_contacted`、`unavailable`、`identity_mismatch` 结束当前项并继续；`normal_failure` 记录失败并继续；`captcha`、`login_required`、`security_check` 暂停整批且不自动恢复。报告按状态给出数量和每项安全摘要。
+将占位异常替换为事务实现：每批同一时刻最多一个活动 `BrowserTask` 租约；`sent`、`already_contacted`、`unavailable`、`identity_mismatch` 结束当前项并继续；`normal_failure` 映射为 `send_failed` 并继续；`captcha`、`login_required`、`security_check` 将批次置为 `paused_security`，保留当前项为可恢复状态且不自动恢复。报告按现有状态给出数量和每项安全摘要。
+
+工作台只在批次 `approved` 时显示独立的“开始执行”按钮；它与 Phase 3 的“批准本批次”动作分离，必须由用户再次点击。执行接口使用应用令牌并记录审计事件，不能由浏览器任务结果或模型调用隐式触发。
 
 - [ ] **Step 5: 测试并提交**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_delivery_service.py tests/api/test_delivery_api.py -q
-git add agent_app/application/deliveries.py agent_app/api/routers/deliveries.py agent_app/domain/enums.py agent_app/domain/transitions.py agent_app/infrastructure/models.py agent_app/infrastructure/repositories.py agent_app/main.py tests/unit/test_delivery_service.py tests/api/test_delivery_api.py
+git add agent_app/application/deliveries.py agent_app/api/routers/deliveries.py agent_app/domain/enums.py agent_app/domain/transitions.py agent_app/infrastructure/models.py agent_app/infrastructure/repositories.py agent_app/main.py agent_app/web/index.html agent_app/web/app.js tests/unit/test_delivery_service.py tests/api/test_delivery_api.py
 git commit -m "feat: add approval-gated delivery state machine"
 ```
 
@@ -129,7 +137,7 @@ Expected: tests pass and Node exits 0。
 
 - [ ] **Step 1: 写错误策略与兼容性失败测试**
 
-逐一验证 6 种结果：`sent`、`already_contacted`、`unavailable`、`identity_mismatch`、`normal_failure` 会释放租约并领取下一项；三种安全结果会暂停且下一次 lease 返回 204。静态回归验证 Agent 配置默认关闭、健康检查失败后进入独立模式、原固定问候语和原开始/停止入口仍存在。
+逐一验证普通结果：`sent`、`already_contacted`、`unavailable`、`identity_mismatch`、`normal_failure`（映射为 `send_failed`）会解析当前浏览器任务并领取下一项；`captcha`、`login_required`、`security_check` 会暂停整批，且下一次 `GET /browser/tasks/next` 返回 204。静态回归验证 Agent 配置默认关闭、健康检查失败后进入独立模式、原固定问候语和原开始/停止入口仍存在。
 
 - [ ] **Step 2: 运行测试并确认失败**
 
@@ -141,7 +149,7 @@ Expected: at least one policy assertion fails。
 
 - [ ] **Step 3: 实现结果分类和 UI 提示**
 
-服务端持有权威状态；脚本上报后以服务端响应决定继续或暂停。普通失败提示保持非阻塞，安全暂停显示明确原因和“处理后在工作台恢复”指引。恢复接口只允许暂停批次，且用户必须显式点击。
+服务端持有权威状态；脚本上报后以服务端响应决定继续或暂停。普通失败提示保持非阻塞，安全暂停显示明确原因和“处理后在工作台恢复”指引。恢复接口只允许 `paused` 或 `paused_security` 批次，且用户处理页面问题后必须在工作台显式点击；服务和脚本均不得自动处理验证码、登录或安全校验。
 
 - [ ] **Step 4: 全部测试并提交**
 
@@ -206,13 +214,14 @@ Expected: tests pass。
 ## Task 5: 固化外部子 Agent API 与权限范围
 
 **Files:**
-- Create: `agent_app/api/auth.py`
+- Modify: `agent_app/api/dependencies.py`
 - Create: `agent_app/api/routers/integrations.py`
 - Modify: `agent_app/main.py`
 - Create: `agent_app/client.py`
 - Create: `tests/api/test_integration_auth.py`
 - Create: `tests/api/test_integration_contract.py`
 - Create: `docs/api-v1.md`
+- Create: `alembic/versions/0004_integration_tokens.py`
 
 - [ ] **Step 1: 写认证和越权失败测试**
 
@@ -220,7 +229,7 @@ Expected: tests pass。
 
 - [ ] **Step 2: 写客户端契约失败测试**
 
-`ResumeDeliveryAgentClient` 提供 `create_batch()`、`get_batch()`、`start_analysis()`、`get_review()`、`start_delivery()`、`get_report()`；默认 `base_url=http://127.0.0.1:65166/api/v1`，明确超时，不自动重试改变状态的请求。
+`ResumeDeliveryAgentClient` 提供 `create_batch()`、`get_batch()`、`start_analysis()`、`get_review()`、`start_delivery()`、`get_report()`；默认 `base_url=http://127.0.0.1:8765/api/v1`，明确超时，不自动重试改变状态的请求。
 
 - [ ] **Step 3: 运行测试并确认失败**
 
@@ -232,7 +241,7 @@ Expected: auth/client missing。
 
 - [ ] **Step 4: 实现本地令牌和客户端**
 
-令牌只保存哈希、名称、scopes、创建/撤销时间；明文只在创建时显示一次。服务仍只绑定 `127.0.0.1`。客户端只封装版本化 HTTP API，不导入应用内部仓储或数据库。
+复用 Phase 1 的应用令牌和浏览器令牌校验，不改变其 scope；迁移 `0004_integration_tokens` 新增独立的集成令牌元数据表，只保存哈希、名称、scopes、创建/撤销时间。集成令牌明文只在创建时显示一次，且不得经普通查询接口回显。服务仍只绑定 `127.0.0.1`。客户端只封装版本化 HTTP API，不导入应用内部仓储或数据库。
 
 - [ ] **Step 5: 编写可调用契约文档并提交**
 
@@ -240,7 +249,7 @@ Expected: auth/client missing。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/api/test_integration_auth.py tests/api/test_integration_contract.py -q
-git add agent_app/api/auth.py agent_app/api/routers/integrations.py agent_app/main.py agent_app/client.py tests/api/test_integration_auth.py tests/api/test_integration_contract.py docs/api-v1.md
+git add agent_app/api/dependencies.py agent_app/api/routers/integrations.py agent_app/main.py agent_app/client.py alembic/versions/0004_integration_tokens.py tests/api/test_integration_auth.py tests/api/test_integration_contract.py docs/api-v1.md
 git commit -m "feat: expose scoped resume delivery agent api"
 ```
 
@@ -270,7 +279,7 @@ Expected: orchestration assertion fails until wiring is complete。
 
 - [ ] **Step 3: 补齐启动和用户文档**
 
-`scripts/start-agent.ps1` 校验虚拟环境后执行 `uvicorn agent_app.main:app --host 127.0.0.1 --port 65166`。README 依次说明：安装、初始化数据库、配置画像/模型、安装油猴、独立模式、Agent 模式、审批发送、安全暂停、数据清理和外部 API。`.env.example` 只含非秘密示例值；`.gitignore` 排除 `.env`、`data/`、数据库、日志和测试缓存。
+`scripts/start-agent.ps1` 校验虚拟环境后执行 `uvicorn agent_app.main:app --host 127.0.0.1 --port 8765`。README 依次说明：安装、初始化数据库、配置画像/模型、安装油猴、独立模式、Agent 模式、审批与显式执行、安全暂停、数据清理和外部 API。`.env.example` 只含非秘密示例值；`.gitignore` 排除 `.env`、`data/`、数据库、日志和测试缓存。
 
 - [ ] **Step 4: 执行自动化发布门禁**
 
@@ -287,7 +296,7 @@ Expected: tests pass且总覆盖率至少 80%；JavaScript 语法检查成功；
 
 - [ ] **Step 5: 执行真实浏览器小批量人工验收**
 
-在用户本人已登录环境、合法筛选页面中使用 2–3 个岗位：先确认独立模式仍工作；Agent 模式采集后检查快照、分析和问候语；批准前确认没有发送；批准后观察逐条定位；人为触发停止并确认不会继续；若出现验证码/登录/安全校验，只验证暂停，不尝试自动处理。记录岗位强 ID、结果类别和时间，不记录 Cookie、联系方式或 API Key。
+在用户本人已登录环境、合法筛选页面中使用 2–3 个岗位：先确认独立模式仍工作；Agent 模式采集后检查快照、分析和问候语；批准前确认没有发送；批准后再次确认仍未发送，再由用户点击“开始执行”观察逐条定位；人为触发停止并确认不会继续；若出现验证码/登录/安全校验，只验证暂停，不尝试自动处理。记录岗位强 ID、结果类别和时间，不记录 Cookie、联系方式或 API Key。
 
 - [ ] **Step 6: 提交最终文档与端到端测试**
 
@@ -309,3 +318,4 @@ Expected: commit succeeds；最终工作树为空。
 - [ ] 模型、工作台、自然语言和外部 API 均不能绕过人工批准。
 - [ ] 密钥和默认排除的个人字段不进入数据库普通表、日志或导出。
 - [ ] 自动化门禁和 2–3 条人工验收均通过，文档可让新会话和普通用户复现。
+- [ ] 按 `AGENTS.md` 更新所有受影响文档，清理确认无独有决策或证据的过时过程文件，并确认工作树只包含本阶段预期改动。

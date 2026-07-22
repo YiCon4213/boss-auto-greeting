@@ -1,14 +1,22 @@
 # 新会话交接说明
 
-## 1. 新会话的任务目标
+更新时间：2026-07-22。本文是唯一的新会话交接文件；不要再创建按日期复制的交接文档。
 
-在 `D:\Web\boss\boss-auto-greeting` 中，把现有 BOSS 直聘自动沟通油猴脚本改造成双模式本地简历投递 Agent：保留原油猴独立功能，并新增本地 Agent、SQLite、岗位分析、个性化话术、批次审批、安全发送和对外 `/api/v1`。
+## 当前状态
 
-不要修改父目录 `D:\Web\boss` 原项目中的任何文件。
+Phase 1“本地服务与数据基础”已经完成并通过退出门禁，下一项工作是 Phase 2“油猴桥接与批次采集”。Phase 1 的实现包括 FastAPI、SQLite/Alembic `0001`、双令牌、画像与模型设置、批次基础 API 和 16 项自动化测试。
 
-## 2. 开始工作前必须阅读
+开始 Phase 2 前应确保 Phase 1 Pull Request 已合并到 GitHub `main`，然后在本地执行：
 
-按顺序完整阅读：
+```powershell
+git switch main
+git pull --ff-only origin main
+git switch -c codex/phase-2-browser-bridge-collection
+```
+
+不要直接从 `codex/phase-1-agent-foundation` 创建 Phase 2 分支，否则后续 PR 会形成不必要的堆叠依赖。
+
+## 必读顺序
 
 1. `AGENTS.md`
 2. `docs/README.md`
@@ -16,66 +24,30 @@
 4. `docs/product-requirements.md`
 5. `docs/superpowers/specs/2026-07-21-local-resume-delivery-agent-design.md`
 6. `docs/roadmap.md`
-7. 待生成的 `docs/superpowers/plans/2026-07-21-local-resume-delivery-agent.md`
+7. `docs/superpowers/plans/2026-07-22-local-resume-delivery-agent.md`
+8. `docs/superpowers/plans/2026-07-22-browser-bridge-collection.md`
 
-然后检查：
+然后检查 Git 状态、最近提交、当前分支、Alembic head 和现有未提交改动。
 
-- 当前 Git 状态和未提交改动。
-- 主脚本最新内容和最近提交。
-- 计划是否仍与代码现状一致。
+## Phase 2 已对齐的前置事实
 
-## 3. 已确认的关键决策
+- 服务地址统一为 `http://127.0.0.1:8765`。
+- Phase 1 已创建 `browser_tasks` 和 `job_snapshots`，Phase 2 通过迁移 `0002_browser_task_leasing` 补字段，不创建重复表。
+- Phase 1 的 `create_app()` 支持注入临时 `session_factory` 和 `SecretStore`，测试应继续使用临时 SQLite 与文件密钥库。
+- 浏览器令牌不得通过 API 返回；Phase 2 计划增加显式本机 CLI，只在用户主动运行时显示浏览器令牌。
+- Agent 模式默认关闭；连接失败不得影响独立模式。
+- Phase 2 只采集详情，不进入聊天、不发送消息；`execute_delivery` 在 Phase 4 前只能返回“尚未实现”。
 
-- 整合架构：油猴执行层 + 本地 FastAPI Agent + SQLite + 本地网页工作台。
-- 工作目录：只修改克隆项目。
-- 双模式：Agent 不可用时原油猴功能仍独立可用。
-- 批次：默认采集 10 个，审批发送完成后停止。
-- 审批：简约左右分栏，一次审批后逐条发送。
-- 筛选：`0-29` 默认取消、`30-59` 谨慎、`60-100` 推荐。
-- 自动取消只看求职目标分；个人匹配分只排序、解释和生成话术。
-- 地点和经验不参与方向筛选；JD 要求未在画像体现时仍可投递。
-- 画像字段为空时不生效。
-- 模型：OpenAI 兼容接口。
-- 模型隐私：只发送明确授权字段，联系方式等默认排除。
-- 话术：基于用户基础模板轻量补充，不写成长文，不虚构事实。
-- 列表刷新：审批基于快照，发送前按强 ID 重新定位并校验会话。
-- JD 更新：同强 ID 可继续使用审批话术。
-- 单项失败：记录并继续；安全校验和登录失效整批暂停。
-- 数据：SQLite 长期保存，支持清理。
-- 扩展：未来可作为其它项目的子 Agent，通过 `/api/v1` 调用，但不能绕过审批。
+## 安全与验证边界
 
-## 4. 基础话术
+- 只处理用户本人已登录后有权查看的职位。
+- 不自动登录、不导出 Cookie、不自动处理验证码，不绕过登录、安全校验、频率限制和访问控制。
+- 后端只下发固定 schema 和白名单任务类型，不下发任意 JavaScript、选择器、SQL 或 URL。
+- 每个任务遵循测试先行，并在提交前检查自动化测试、Userscript 语法、独立模式回归、文档一致性和 Git 状态。
+- Phase 2 退出门禁必须由用户在本人登录环境中完成两岗位采集验证；出现验证码或安全校验时只确认暂停，不尝试处理或绕过。
+
+## 新会话执行指令
 
 ```text
-老师您好，我是来自华南农业大学（双一流）的研究生。仔细阅读贵公司的招聘要求，我认为自己能够胜任这份工作。本人具备AI Agent 和后端开发等技术栈和项目实践经历。在Github上有多个开源项目。此外还拥有丰富的科研，竞赛和工作经历，科研课题与机器学习，自然语言识别相关。可实习3个月至6个月，面试通过可3日内到岗
+请在 D:\Web\boss\boss-auto-greeting 中继续“本地简历投递 Agent”。只修改该子项目。先完整阅读 AGENTS.md、docs/README.md、docs/current-state-analysis.md、产品需求、设计规格、路线图、总计划和 Phase 2 计划；检查 Git 状态并保留已有改动。确认 Phase 1 已在 main 中后，从 Phase 2 第一个未完成复选框开始，使用 superpowers:executing-plans 和测试驱动方式执行。只完成 Phase 2 并通过退出门禁后汇报；保留油猴独立模式，不得绕过人工审批、验证码、登录或安全校验。
 ```
-
-生成时应保留其自然、直接、礼貌的风格，允许修正明显标点和表达，但不能改变真实经历。
-
-## 5. 实施纪律
-
-- 在开始编码前先根据已批准设计生成并审阅详细实施计划。
-- 使用测试驱动方式逐阶段实施。
-- 不把整个九千行脚本一次性重写。
-- 每个阶段先建立接口和失败测试，再做最小实现。
-- 每完成一个阶段都运行独立模式回归。
-- 不使用或增强反调试脚本来绕过平台安全措施。
-- 不自动登录、不导出 Cookie、不自动处理验证码。
-- 不在日志、数据库普通表或导出中保存 API Key。
-- 浏览器任务只能使用白名单 schema，禁止执行后端传来的任意脚本。
-
-## 6. 推荐的新会话开场指令
-
-可以把下面文字直接交给新会话：
-
-```text
-请在 D:\Web\boss\boss-auto-greeting 中继续“本地简历投递 Agent”项目。只修改该子项目，不得修改父目录 D:\Web\boss 的原项目。先完整阅读 AGENTS.md、docs/README.md、docs/current-state-analysis.md、docs/product-requirements.md、docs/superpowers/specs/2026-07-21-local-resume-delivery-agent-design.md、docs/roadmap.md 和详细实施计划。检查 Git 状态，保留已有未提交改动。然后严格按实施计划和测试驱动方式从第一个未完成任务开始；每个阶段都验证油猴独立模式没有回归，不得绕过审批、验证码、登录或安全校验。
-```
-
-## 7. 当前仍需完成的设计流程
-
-书面设计规格生成后，需要用户审阅确认。确认后使用 `superpowers:writing-plans` 生成详细、可逐任务执行的实施计划：
-
-`docs/superpowers/plans/2026-07-21-local-resume-delivery-agent.md`
-
-该计划应列出每个任务的具体文件、失败测试、最小实现、验证命令和提交边界，供新会话直接执行。

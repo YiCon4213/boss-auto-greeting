@@ -1,6 +1,23 @@
 # boss-auto-greeting
 基于篡改猴/油猴的boss直聘自动打招呼脚本
 
+## 本地简历投递 Agent 开发状态
+
+项目正在保留油猴独立模式的前提下，增加本机 FastAPI + SQLite Agent。当前 Phase 1 已完成：
+
+- 本地服务默认绑定 `127.0.0.1:8765`。
+- Alembic `0001`、11 张基础业务表、应用/浏览器双令牌已经建立。
+- 已提供画像、模型非敏感设置和批次基础 `/api/v1`。
+- 16 项自动化测试通过，`agent_app` 覆盖率 93%。
+
+当前尚未实现 Agent 模式的浏览器采集、模型分析、审批工作台和安全发送；原 `zhipin-auto-greeting.user.js` 仍按独立模式直接安装运行。开发和安全约束请先阅读 [AGENTS.md](AGENTS.md)，当前阶段入口见 [docs/README.md](docs/README.md)。
+
+本地开发验证：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+node --check .\zhipin-auto-greeting.user.js
+```
 
 
 ## 免责声明 / Disclaimer
