@@ -256,7 +256,7 @@ node --check .\zhipin-auto-greeting.user.js
 
 Expected: tests pass and Node exits 0.
 
-- [ ] **Step 7: Perform manual standalone smoke test**
+- [x] **Step 7: Perform manual standalone smoke test**
 
 With Agent mode off, reload the userscript and confirm: existing panel opens, existing config loads, “启动” enters the original list loop, and no request to port 8765 is made.
 
@@ -517,6 +517,9 @@ Run the manual checklist with a two-job batch in the user's logged-in browser. E
 - `a571ed1`：服务端强身份键、JD 指纹、不可变快照和重复审计。
 - `e7d5038`：只采集不发送的 `BatchCollector`、独立恢复状态和安全暂停。
 - `098aae5`：幂等 `/collect`、快照计数校验、原子批次终结与人工验证清单。
-- 自动化证据：45 项 pytest 通过，`agent_app` 覆盖率 93%，Alembic `0002 (head)`，Python `compileall`、Userscript `node --check` 和 `git diff --check` 通过。
+- `09a7f90`：修复 Agent 面板被功能区可见性逻辑隐藏的问题，并增加可见性契约。
+- `c54a75f`：修复首次创建浏览器 worker 时意外清空内存配置的问题，并增加 worker 契约。
+- `2556893`：允许已完成批次幂等接收既有快照的终态重复上报，仍拒绝新增身份。
+- 自动化证据：48 项 pytest 通过，`agent_app` 覆盖率 93.12%，Alembic `0002 (head)`，Python `compileall`、Userscript `node --check` 和 `git diff --check` 通过。
 - 非阻塞警告：FastAPI/Starlette `TestClient` 有一条既有第三方弃用警告。
-- 阻塞门禁：2026-07-22 首次真实浏览器验证在岗位列表加载时触发 BOSS“安全验证”，已立即停止且未点击验证按钮；本地任务尚未创建。Task 2 Step 7、两岗位采集和 Phase 2 Exit Gate 仍未完成，Phase 2 与总计划复选框保持未勾选，禁止开始 Phase 3。
+- 人工门禁：2026-07-22 在用户本人 Chrome 完成两个岗位的只读采集，批次为 `collected`、快照数为 2；用户确认无聊天导航、无沟通点击、无消息发送，也未出现验证码或安全校验。终态重复回放保持快照数、原 payload、JD 指纹和时间戳不变，只追加重复审计。关闭 Agent、停止本地服务并确认 8765 端口释放后，独立模式正常进入原列表循环，并在实际沟通前人工停止。Phase 2 Exit Gate 已通过；Phase 3 未开始。

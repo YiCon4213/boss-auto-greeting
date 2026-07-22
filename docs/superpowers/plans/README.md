@@ -6,8 +6,8 @@
 | --- | --- | --- |
 | 总计划 | 活动 | [2026-07-22-local-resume-delivery-agent.md](2026-07-22-local-resume-delivery-agent.md) |
 | Phase 1：本地服务与数据基础 | 已完成，16 项测试、93% 覆盖率 | [2026-07-22-agent-foundation.md](2026-07-22-agent-foundation.md) |
-| Phase 2：油猴桥接与批次采集 | 实现完成，人工退出门禁待验证 | [2026-07-22-browser-bridge-collection.md](2026-07-22-browser-bridge-collection.md) |
-| Phase 3：分析、话术与审批工作台 | 等待 Phase 2 人工退出门禁 | [2026-07-22-analysis-approval-workbench.md](2026-07-22-analysis-approval-workbench.md) |
+| Phase 2：油猴桥接与批次采集 | 已完成，48 项测试、93.12% 覆盖率及真实浏览器门禁通过 | [2026-07-22-browser-bridge-collection.md](2026-07-22-browser-bridge-collection.md) |
+| Phase 3：分析、话术与审批工作台 | 待开始 | [2026-07-22-analysis-approval-workbench.md](2026-07-22-analysis-approval-workbench.md) |
 | Phase 4：安全发送、自然语言与外部调用 | 等待 Phase 3 | [2026-07-22-delivery-command-integration.md](2026-07-22-delivery-command-integration.md) |
 
 执行规则：

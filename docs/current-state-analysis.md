@@ -1,10 +1,10 @@
 # 当前项目状态审计
 
-更新时间：2026-07-22。本文描述 Phase 2 自动化实现完成、首次真实浏览器退出门禁因 BOSS 安全验证阻塞时的代码事实，不替代产品需求或设计规格。
+更新时间：2026-07-22。本文描述 Phase 2 实现及真实浏览器退出门禁全部通过后的代码事实，不替代产品需求或设计规格。
 
 ## 1. 仓库与分支边界
 
-`D:\Web\boss\boss-auto-greeting` 是独立 Git 仓库，位于另一个 Git 仓库 `D:\Web\boss` 内。Phase 1 已通过 PR #1 合入 `main`；Phase 2 位于 `codex/phase-2-browser-bridge-collection`，不得在人工退出门禁通过前开始 Phase 3。
+`D:\Web\boss\boss-auto-greeting` 是独立 Git 仓库，位于另一个 Git 仓库 `D:\Web\boss` 内。Phase 1 已通过 PR #1 合入 `main`；Phase 2 已在 `codex/phase-2-browser-bridge-collection` 完成，等待按仓库流程集成。Phase 3 尚未开始。
 
 ## 2. 已实现能力
 
@@ -39,18 +39,19 @@
 
 ## 3. 当前测试与验证证据
 
-- 45 项 pytest 全部通过。
-- `agent_app` 总覆盖率 93%。
+- 48 项 pytest 全部通过，`agent_app` 总覆盖率 93.12%。
 - Python `compileall`、`node --check zhipin-auto-greeting.user.js` 和 `git diff --check` 通过。
 - Alembic 在新 SQLite 上从空库升级到 `0002 (head)`。
 - 仍有一条既有 FastAPI/Starlette `TestClient` 第三方弃用警告，不影响通过结果。
-- 2026-07-22 首次打开真实 BOSS 岗位列表即出现“当前 IP 地址可能存在异常访问行为”的安全验证；未点击验证按钮，未进入聊天或发送。本地任务尚未创建，因此本次不能作为 `paused_security` 服务端状态证据；两岗位采集和独立模式回归仍未执行，Phase 2 退出门禁未通过。
+- 2026-07-22 在用户本人 Chrome 完成 `limit=2` 的真实批次：任务终态为 `resolved`，批次为 `collected`，SQLite 中为两个不同强身份键和 JD 指纹的快照；分析、问候语、审批版本和发送项均为 0。
+- 对已完成批次重复上报同一载荷返回 `duplicate=true`；快照计数保持 2，原 ID、payload、JD 指纹及时间戳均未改变，只新增一条重复审计事件。
+- 用户确认采集期间没有进入聊天、点击沟通或发送消息，也没有出现验证码或安全校验。Agent 关闭且本地服务端口释放后，独立模式正常进入原列表循环，并在实际沟通前人工停止。
 
-## 4. 尚未实现或未验证
+## 4. 尚未实现
 
 - 模型分析、个性化话术、审批工作台、不可变批准队列执行和自然语言命令尚未实现。
 - `execute_delivery` 仍只返回“发送队列尚未实现”，不能用于 Agent 投递。
-- 真实浏览器验证必须按 `docs/manual-testing/phase-2-collection.md` 在用户本人登录环境执行；遇验证码或安全校验只确认暂停，不处理或绕过。
+- 后续真实浏览器验证仍必须由用户本人登录并授权；遇验证码或安全校验只暂停，不处理或绕过。
 
 ## 5. 主要风险
 
