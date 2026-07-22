@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator, model_validator
 
-from agent_app.domain.enums import BatchStatus
+from agent_app.domain.enums import AnalysisStatus, BatchStatus
 
 
 class ProfileUpdate(BaseModel):
@@ -47,6 +47,39 @@ class ModelConfigRead(BaseModel):
     timeout_seconds: int
     temperature: float
     api_key_configured: bool
+
+
+class AnalysisView(BaseModel):
+    id: str
+    snapshot_id: str
+    status: AnalysisStatus
+    target_score: int | None
+    personal_score: int | None
+    overall_score: int | None
+    recommendation: str
+    selected_by_default: bool
+    approvable: bool
+    target_reasons: list[str]
+    personal_matches: list[str]
+    cautions: list[str]
+    model: str
+    prompt_version: str
+    error_code: str = ""
+
+
+class GreetingView(BaseModel):
+    id: str
+    snapshot_id: str
+    status: str
+    source: str
+    text: str
+    generated_text: str | None
+    final_text: str | None
+    used_facts: list[str]
+    approvable: bool
+    error_code: str = ""
+    model: str = ""
+    approved_at: datetime | None = None
 
 
 class BatchCreate(BaseModel):

@@ -1,6 +1,12 @@
 from enum import StrEnum
 
 
+class AnalysisStatus(StrEnum):
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    FAILED = "analysis_failed"
+
+
 class BatchStatus(StrEnum):
     DRAFT = "draft"
     COLLECTING = "collecting"

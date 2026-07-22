@@ -119,6 +119,11 @@ class Greeting(IdMixin, TimestampMixin, Base):
 
 class ApprovalVersion(IdMixin, TimestampMixin, Base):
     __tablename__ = "approval_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "version", name="uq_approval_versions_batch_version"
+        ),
+    )
 
     batch_id: Mapped[str] = mapped_column(ForeignKey("batches.id"), index=True)
     version: Mapped[int] = mapped_column(Integer)

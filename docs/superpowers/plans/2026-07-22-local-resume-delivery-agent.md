@@ -28,7 +28,7 @@
 
 - [x] [Phase 1：本地服务与数据基础](2026-07-22-agent-foundation.md)（16 项测试，93% 覆盖率）
 - [x] [Phase 2：油猴桥接与批次采集](2026-07-22-browser-bridge-collection.md)（48 项自动化测试、93.12% 覆盖率及真实浏览器退出门禁通过）
-- [ ] [Phase 3：分析、话术与审批工作台](2026-07-22-analysis-approval-workbench.md)
+- [x] [Phase 3：分析、话术与审批工作台](2026-07-22-analysis-approval-workbench.md)（81 项自动化测试、92.42% 覆盖率、Alembic `0003` 及桌面/窄屏工作台门禁通过）
 - [ ] [Phase 4：安全发送、自然语言与外部调用](2026-07-22-delivery-command-integration.md)
 
 不要跨阶段并行修改共享状态机。只有当前阶段的最终验收通过并提交后，才进入下一阶段。

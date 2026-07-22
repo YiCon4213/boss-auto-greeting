@@ -23,7 +23,7 @@
 - Test: `tests/unit/test_llm_payload.py`
 - Test: `tests/unit/test_llm_client.py`
 
-- [ ] **Step 1: 写脱敏载荷失败测试**
+- [x] **Step 1: 写脱敏载荷失败测试**
 
 ```python
 def test_profile_payload_omits_empty_and_private_fields():
@@ -44,11 +44,11 @@ def test_profile_payload_omits_empty_and_private_fields():
     }
 ```
 
-- [ ] **Step 2: 写客户端契约失败测试**
+- [x] **Step 2: 写客户端契约失败测试**
 
 使用 `httpx.MockTransport` 验证请求目标为 `{base_url}/chat/completions`，请求含 `Authorization: Bearer ...`，并且响应必须经 `AnalysisModelOutput` 或 `GreetingModelOutput` 校验；非 JSON、字段缺失、超时均转换为 `ModelCallError`，错误文本不得包含 API Key。
 
-- [ ] **Step 3: 运行测试并确认失败**
+- [x] **Step 3: 运行测试并确认失败**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_llm_payload.py tests/unit/test_llm_client.py -q
@@ -56,7 +56,7 @@ def test_profile_payload_omits_empty_and_private_fields():
 
 Expected: collection error，提示 `llm_schemas` 或 `llm` 尚不存在。
 
-- [ ] **Step 4: 实现稳定接口**
+- [x] **Step 4: 实现稳定接口**
 
 ```python
 class AnalysisModelOutput(BaseModel):
@@ -80,7 +80,7 @@ class LlmClient(Protocol):
 
 模型画像直接使用 `ProfileService.model_context()`，沿用 Phase 1 的字段可见性和空值剔除规则，禁止另建第二套白名单。`OpenAICompatibleClient` 使用单一共享 `httpx.AsyncClient`、30 秒超时，并通过现有配置字段 `model` 调用。网络错误、超时或非法 JSON 最多允许一次结构化重试；错误文本不得包含原始响应、API Key 或隐私字段。
 
-- [ ] **Step 5: 运行测试并提交**
+- [x] **Step 5: 运行测试并提交**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_llm_payload.py tests/unit/test_llm_client.py -q
@@ -101,7 +101,7 @@ Expected: tests pass；提交只包含模型契约、适配器和测试。
 - Create: `tests/unit/test_analysis_service.py`
 - Create: `alembic/versions/0003_analysis_approval_integrity.py`
 
-- [ ] **Step 1: 写业务规则失败测试**
+- [x] **Step 1: 写业务规则失败测试**
 
 覆盖以下精确行为：
 
@@ -115,7 +115,7 @@ assert recommendation_for(100) == "recommend"
 
 另外验证：`analysis_enabled=False` 时不调用模型、目标分为 `None` 且默认选中；个人分不改变 `selected_by_default`；地点和经验不进入目标方向提示词；简历未出现 JD 技能只进入 `cautions`，不得成为排除条件。模型失败时状态为 `analysis_failed`，该职位可见但不可选择、不可批准；用户必须成功重试，或显式关闭分析后重新执行确定性跳过，才能进入审批。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_analysis_service.py -q
@@ -123,11 +123,11 @@ assert recommendation_for(100) == "recommend"
 
 Expected: import error 或断言失败。
 
-- [ ] **Step 3: 添加领域结构和数据库字段**
+- [x] **Step 3: 添加领域结构和数据库字段**
 
 复用现有 `Analysis.payload` 保存经 Pydantic 校验的目标分、个人分、推荐档位、原因、风险、模型名和提示词版本；复用其 `status` 表达完成、跳过或失败。迁移 `0003` 只补充审批所需的唯一约束和索引（至少保证 `approval_versions(batch_id, version)` 唯一），不创建 `JobAnalysis`、`GreetingDraft`、`Approval` 或 `ApprovedDeliveryItem` 等同义表，也不重写已有数据。
 
-- [ ] **Step 4: 实现 AnalysisService**
+- [x] **Step 4: 实现 AnalysisService**
 
 ```python
 class AnalysisService:
@@ -142,7 +142,7 @@ class AnalysisService:
 
 将 `raise NotImplementedError` 替换为最小实现：读取冻结快照和当前画像，构造不含隐私字段的载荷；关闭时返回跳过结果；开启时保存经校验的模型结果。`selected_by_default` 只按 `target_score >= 30` 计算。模型错误写入安全错误码，不保存原始响应和密钥。
 
-- [ ] **Step 5: 迁移、测试并提交**
+- [x] **Step 5: 迁移、测试并提交**
 
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head
@@ -161,7 +161,7 @@ Expected: migration succeeds and tests pass。
 - Modify: `agent_app/infrastructure/repositories.py`
 - Create: `tests/unit/test_greeting_service.py`
 
-- [ ] **Step 1: 写问候语约束失败测试**
+- [x] **Step 1: 写问候语约束失败测试**
 
 固定基础模板为产品规格中的文本，验证：关闭问候语模型时返回基础模板；模型开启但最终失败时标记 `generation_failed` 且不可批准；用户可显式关闭问候语模型后重新生成基础模板。岗位要求技能、时间或经验且画像有对应事实时允许补充；画像没有事实时不得声称具备；输出去除电话、邮箱和地址；最终文本允许 20–500 字且不得为空。
 
@@ -171,7 +171,7 @@ assert "13800000000" not in result.text
 assert result.approved_at is None
 ```
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_greeting_service.py -q
@@ -179,15 +179,15 @@ assert result.approved_at is None
 
 Expected: `GreetingService` 尚不存在。
 
-- [ ] **Step 3: 实现生成和事实白名单校验**
+- [x] **Step 3: 实现生成和事实白名单校验**
 
 `GreetingService.generate(snapshot_id: str)` 的模型输入仅含基础模板、JD 摘要、岗位名称、公司名称、非空画像和已保存分析。系统指令要求模仿模板自然、直接、礼貌的中文风格，优先补充技能/时间/经验的真实匹配点，不虚构、不拉长。模型返回的 `used_facts` 必须逐项存在于画像白名单；任一事实无法验证时标记 `generation_failed`，不得静默回退并进入审批。
 
-- [ ] **Step 4: 保存可编辑草稿**
+- [x] **Step 4: 保存可编辑草稿**
 
 复用现有 `Greeting`：模型原文写入 `generated_text`，用户编辑结果写入 `final_text`，来源、事实引用、错误码和时间写入 `payload`。编辑只更新未批准记录；批准由下一任务复制文本，禁止原地改变批准内容。
 
-- [ ] **Step 5: 运行测试并提交**
+- [x] **Step 5: 运行测试并提交**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_greeting_service.py -q
@@ -208,7 +208,7 @@ Expected: tests pass。
 - Modify: `agent_app/infrastructure/repositories.py`
 - Create: `tests/api/test_analysis_and_approval_api.py`
 
-- [ ] **Step 1: 写 API 失败测试**
+- [x] **Step 1: 写 API 失败测试**
 
 覆盖：
 
@@ -221,7 +221,7 @@ POST /api/v1/batches/{id}/approve              -> 200
 
 批准请求体为 `{"items":[{"snapshot_id":"<uuid>","selected":true,"greeting":"..."}]}`。验证未分析完成、`analysis_failed` 或 `generation_failed` 返回 409；空选择允许批准并形成空完成队列；重复批准返回同一个 `approval_version_id`；批准后编辑返回 409；未批准批次不得创建可领取发送任务。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/api/test_analysis_and_approval_api.py -q
@@ -229,15 +229,15 @@ POST /api/v1/batches/{id}/approve              -> 200
 
 Expected: routes return 404。
 
-- [ ] **Step 3: 实现批处理编排**
+- [x] **Step 3: 实现批处理编排**
 
 `POST analyze` 在本地后台任务中按快照顺序执行，单项模型失败记录后继续。批次状态依次为 `collected -> analyzing -> awaiting_approval`。同一批次已有进行中的分析时返回原作业，不并发启动第二次。
 
-- [ ] **Step 4: 实现不可变批准队列**
+- [x] **Step 4: 实现不可变批准队列**
 
 复用现有 `ApprovalVersion` 和 `DeliveryItem`。在一个数据库事务中锁定批次、递增版本，并把每个被选中的强 ID、职位快照摘要、最终问候语、顺序号和批准时间复制到不可变的批准版本及队列项；批准完成后状态为 `approved`。发送层只能读取对应 `approval_version_id` 的 `DeliveryItem.final_greeting`，不能读取后来变化的 `Greeting` 生成发送文本。
 
-- [ ] **Step 5: 运行 API 与回归测试并提交**
+- [x] **Step 5: 运行 API 与回归测试并提交**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/api/test_analysis_and_approval_api.py tests/unit/test_analysis_service.py tests/unit/test_greeting_service.py -q
@@ -257,11 +257,11 @@ Expected: tests pass。
 - Create: `tests/api/test_workbench.py`
 - Create: `tests/contracts/test_workbench_assets.py`
 
-- [ ] **Step 1: 写静态页面与安全契约失败测试**
+- [x] **Step 1: 写静态页面与安全契约失败测试**
 
 验证 `/` 返回工作台，包含批次状态、分析开关、左侧职位列表、右侧 JD/匹配原因/风险/问候语编辑区以及“批准本批次”按钮；脚本不得包含 `innerHTML =`、远程 CDN 或 API Key；批准按钮仅在批次 `awaiting_approval` 且所有选中项均可批准时启用。Phase 3 不提供执行发送按钮。
 
-- [ ] **Step 2: 运行测试并确认失败**
+- [x] **Step 2: 运行测试并确认失败**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/api/test_workbench.py tests/contracts/test_workbench_assets.py -q
@@ -269,15 +269,15 @@ Expected: tests pass。
 
 Expected: `/` returns 404 或资源不存在。
 
-- [ ] **Step 3: 实现无构建工具工作台**
+- [x] **Step 3: 实现无构建工具工作台**
 
 使用语义化 HTML、CSS 变量和原生模块脚本。列表卡片显示公司、岗位、两个分数、推荐档位和选中状态；右栏允许查看冻结 JD、编辑问候语、手动勾选/取消。所有用户内容通过 `textContent` 或表单 `value` 渲染。
 
-- [ ] **Step 4: 接入任务轮询和审批 API**
+- [x] **Step 4: 接入任务轮询和审批 API**
 
 页面每 2 秒轮询当前批次；离开审批状态后停止轮询。点击批准时禁用按钮，提交当前选择和文本；成功后显示“已批准，等待用户在 Phase 4 显式开始执行”，失败时恢复按钮并显示可读错误，不自动重复提交。
 
-- [ ] **Step 5: 测试、全阶段验证并提交**
+- [x] **Step 5: 测试、全阶段验证并提交**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/api/test_workbench.py tests/contracts/test_workbench_assets.py -q
@@ -293,10 +293,21 @@ Expected: all tests pass；两个 JavaScript 文件语法检查成功；`git dif
 
 ## Phase 3 Exit Gate
 
-- [ ] 分析关闭时仍能生成基础问候语并进入审批。
-- [ ] 个人匹配分不导致自动取消；目标分阈值边界测试通过。
-- [ ] 空画像字段和隐私字段不进入模型请求。
-- [ ] 批准后文本与强 ID 不可变，任何发送入口都尚不能绕过批准。
-- [ ] 工作台在窄屏可用，所有动态内容安全渲染。
-- [ ] 按 `AGENTS.md` 检查并更新当前状态、路线图、计划索引、交接文档，安全清理完全过时且无独有证据的过程文件。
-- [ ] `git status --short` 为空，然后进入 Phase 4。
+- [x] 分析关闭时仍能生成基础问候语并进入审批。
+- [x] 个人匹配分不导致自动取消；目标分阈值边界测试通过。
+- [x] 空画像字段和隐私字段不进入模型请求。
+- [x] 批准后文本与强 ID 不可变，任何发送入口都尚不能绕过批准。
+- [x] 工作台在窄屏可用，所有动态内容安全渲染。
+- [x] 按 `AGENTS.md` 检查并更新当前状态、路线图、计划索引、交接文档，安全清理完全过时且无独有证据的过程文件。
+- [x] `git status --short` 为空，然后进入 Phase 4。
+
+## 实施记录
+
+- `935b182`：隐私安全的 OpenAI-compatible 模型适配与结构化输出契约。
+- `115b617`：可关闭双评分分析、阈值边界、失败隔离与 Alembic `0003`。
+- `eff29e8`：基础模板、事实白名单与敏感输出清理。
+- `36de0e8`：分析/审阅/编辑/批准 API 与不可变人工批准队列。
+- `af17ffa`：无构建工具的本地双栏工作台与 HttpOnly 会话 cookie。
+- 自动化门禁：81 项 pytest 通过，`agent_app` 覆盖率 92.42%；Python 编译、工作台和原油猴脚本语法检查、空库迁移与差异检查通过。
+- 本机浏览器门禁：桌面双栏和 390x844 单栏布局通过，无横向溢出；验证期间没有访问 BOSS、调用真实模型或执行发送。
+- 安全边界：批准只冻结队列，不创建 `execute_delivery` 任务；`ApprovedQueueRunner` 继续保持未实现占位，油猴独立模式未改变。

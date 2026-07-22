@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>本地简历投递 Agent</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">LOCAL REVIEW WORKBENCH</p>
+        <h1>本地简历投递 Agent</h1>
+      </div>
+      <span id="connection-status" class="status-chip">仅本机</span>
+    </header>
+
+    <main>
+      <section class="batch-toolbar" aria-labelledby="batch-heading">
+        <div>
+          <p class="section-label">当前批次</p>
+          <h2 id="batch-heading">加载需要审批的批次</h2>
+          <p id="batch-summary" class="muted">输入批次 ID 后读取冻结快照。</p>
+        </div>
+        <form id="batch-form" class="batch-form">
+          <label for="batch-id">批次 ID</label>
+          <div class="field-row">
+            <input id="batch-id" name="batch-id" autocomplete="off" placeholder="32 位批次 ID" required>
+            <button type="submit" class="secondary">打开批次</button>
+            <button id="analyze-button" type="button" class="secondary">分析与话术</button>
+          </div>
+        </form>
+      </section>
+
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+
+      <section class="review-grid" aria-label="审批工作台">
+        <aside class="queue-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">岗位队列</p>
+              <h2>逐项确认</h2>
+            </div>
+            <span id="queue-count" class="count-badge">0</span>
+          </div>
+          <div id="job-list" class="job-list" aria-live="polite"></div>
+        </aside>
+
+        <section class="detail-panel">
+          <div id="empty-state" class="empty-state">
+            <p>选择左侧岗位后查看冻结 JD、分析依据与问候语草稿。</p>
+          </div>
+          <div id="detail-content" class="detail-content" hidden>
+            <div class="detail-heading">
+              <div>
+                <p id="detail-company" class="section-label"></p>
+                <h2 id="detail-title"></h2>
+              </div>
+              <label class="selection-control">
+                <input id="detail-selected" type="checkbox">
+                纳入本批次
+              </label>
+            </div>
+
+            <div class="score-grid">
+              <article><span>目标匹配</span><strong id="target-score">—</strong></article>
+              <article><span>个人匹配</span><strong id="personal-score">—</strong></article>
+              <article><span>建议</span><strong id="recommendation">—</strong></article>
+            </div>
+
+            <div class="detail-section">
+              <h3>冻结职位描述</h3>
+              <p id="job-description" class="description"></p>
+            </div>
+
+            <div class="insight-grid">
+              <div>
+                <h3>匹配依据</h3>
+                <ul id="match-reasons"></ul>
+              </div>
+              <div>
+                <h3>信息差距与风险</h3>
+                <ul id="cautions"></ul>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <label for="greeting-editor"><strong>问候语终稿</strong></label>
+              <textarea id="greeting-editor" rows="6" maxlength="500"></textarea>
+              <div class="editor-footer">
+                <span id="greeting-count">0 / 500</span>
+                <button id="save-button" type="button" class="secondary">保存本项</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <footer class="approval-bar">
+        <div>
+          <strong>人工审批门禁</strong>
+          <p>批准后终稿与岗位强 ID 将冻结；本阶段不会执行发送。</p>
+        </div>
+        <button id="approve-button" type="button" class="primary" disabled>批准本批次</button>
+      </footer>
+    </main>
+
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>
