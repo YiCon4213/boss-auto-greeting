@@ -23,7 +23,8 @@ def require_app_token(
     request: Request,
     x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
 ) -> None:
-    _require_token(request, x_agent_token, "app_token")
+    workbench_cookie = request.cookies.get("boss_agent_workbench")
+    _require_token(request, x_agent_token or workbench_cookie, "app_token")
 
 
 def require_browser_token(

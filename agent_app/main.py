@@ -1,7 +1,10 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from secrets import token_urlsafe
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app.api.dependencies import require_app_token
@@ -19,6 +22,7 @@ from agent_app.domain.llm_schemas import LlmClient
 from agent_app.infrastructure.database import create_engine_and_session
 from agent_app.infrastructure.secrets import SecretStore, create_secret_store
 
+WEB_ROOT = Path(__file__).with_name("web")
 
 def create_app(
     settings: Settings | None = None,
@@ -65,6 +69,20 @@ def create_app(
     app.include_router(settings_router.router)
     app.include_router(analysis.router)
     app.include_router(approvals.router)
+
+    app.mount("/assets", StaticFiles(directory=WEB_ROOT), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def workbench(request: Request) -> FileResponse:
+        response = FileResponse(WEB_ROOT / "index.html")
+        response.set_cookie(
+            "boss_agent_workbench",
+            request.app.state.app_token,
+            httponly=True,
+            samesite="strict",
+            path="/api",
+        )
+        return response
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
