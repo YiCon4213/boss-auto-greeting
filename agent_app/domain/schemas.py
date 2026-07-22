@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator, model_validator
 
 from agent_app.domain.enums import BatchStatus
 
@@ -108,3 +109,45 @@ class BrowserTaskResult(BaseModel):
 
 class BrowserTaskResolution(BrowserTaskResult):
     worker_id: str = Field(min_length=1, max_length=120)
+
+
+class JobSnapshotCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    encrypt_job_id: str = ""
+    security_id: str = ""
+    lid: str = ""
+    title: str = Field(min_length=1, max_length=300)
+    company: str = Field(min_length=1, max_length=300)
+    salary: str = ""
+    city: str = ""
+    experience: str = ""
+    degree: str = ""
+    address: str = ""
+    description: str = Field(min_length=1)
+    skills: list[str] = Field(default_factory=list)
+    boss_name: str = ""
+    boss_title: str = ""
+    boss_active: str = ""
+    company_industry: str = ""
+    company_size: str = ""
+    company_stage: str = ""
+    company_description: str = ""
+    source_url: HttpUrl
+    expectation_context: dict[str, object] = Field(default_factory=dict)
+    captured_at: datetime
+
+    @model_validator(mode="after")
+    def require_reliable_identity(self):
+        if not any((self.encrypt_job_id, self.security_id, self.lid)):
+            raise ValueError("reliable job identity is required")
+        return self
+
+
+class JobSnapshotRead(BaseModel):
+    id: str
+    batch_id: str
+    job_identity_key: str
+    jd_fingerprint: str
+    payload: dict[str, object]
+    duplicate: bool

@@ -1,11 +1,19 @@
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agent_app.domain.enums import BatchStatus
 from agent_app.domain.schemas import BatchCreate
-from agent_app.infrastructure.models import Batch, BrowserTask, ModelConfig, Profile
+from agent_app.infrastructure.models import (
+    AuditEvent,
+    Batch,
+    BrowserTask,
+    JobSnapshot,
+    ModelConfig,
+    Profile,
+)
 
 
 class ProfileRepository:
@@ -189,3 +197,57 @@ class BrowserTaskRepository:
         self.session.commit()
         self.session.refresh(record)
         return record
+
+
+class SnapshotRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_identity(self, batch_id: str, identity_key: str) -> JobSnapshot | None:
+        return self.session.scalar(
+            select(JobSnapshot).where(
+                JobSnapshot.batch_id == batch_id,
+                JobSnapshot.job_identity_key == identity_key,
+            )
+        )
+
+    def _record_duplicate(self, batch_id: str, snapshot_id: str) -> None:
+        self.session.add(
+            AuditEvent(
+                batch_id=batch_id,
+                event_type="job_snapshot_duplicate",
+                payload={"snapshot_id": snapshot_id},
+            )
+        )
+        self.session.commit()
+
+    def create_immutable(
+        self,
+        *,
+        batch_id: str,
+        identity_key: str,
+        fingerprint: str,
+        payload: dict[str, object],
+    ) -> tuple[JobSnapshot, bool]:
+        existing = self.get_by_identity(batch_id, identity_key)
+        if existing is not None:
+            self._record_duplicate(batch_id, existing.id)
+            return existing, True
+        record = JobSnapshot(
+            batch_id=batch_id,
+            job_identity_key=identity_key,
+            jd_fingerprint=fingerprint,
+            payload=payload,
+        )
+        self.session.add(record)
+        try:
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            existing = self.get_by_identity(batch_id, identity_key)
+            if existing is None:
+                raise
+            self._record_duplicate(batch_id, existing.id)
+            return existing, True
+        self.session.refresh(record)
+        return record, False
