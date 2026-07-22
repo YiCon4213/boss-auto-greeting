@@ -87,6 +87,11 @@
 
   // 用户可在侧栏面板中修改的配置；保存到 localStorage 后会在下次打开页面时恢复。
   const DEFAULT_CONFIG = {
+    // 本地 Agent 默认关闭；令牌只由用户通过本机 CLI 主动填写。
+    agentModeEnabled: false,
+    agentBaseUrl: 'http://127.0.0.1:8765',
+    agentBrowserToken: '',
+    agentWorkerId: '',
     // 面板和问候语来源。
     panelOpen: true,
     featurePanelOpen: false,
@@ -2577,6 +2582,22 @@
 
           <div class="za-status" data-role="status">等待启动</div>
 
+          <section class="za-section" data-feature-section="agent">
+            <h3>本地 Agent</h3>
+            <label class="za-check"><input data-field="agentModeEnabled" type="checkbox"> 启用 Agent 模式</label>
+            <label>服务地址
+              <input data-field="agentBaseUrl" type="url" autocomplete="off" spellcheck="false">
+            </label>
+            <label>浏览器令牌
+              <input data-field="agentBrowserToken" type="password" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="za-inline">
+              <button type="button" data-action="checkAgentConnection">检查连接</button>
+              <span data-role="agentConnectionStatus">未连接</span>
+            </div>
+            <p class="za-hint">令牌需在本机运行 python -m agent_app.cli show-browser-token 后手工填入。</p>
+          </section>
+
           <section class="za-section" data-feature-section="greeting">
             <h3>打招呼配置</h3>
             <div class="za-radio-row">
@@ -2779,6 +2800,7 @@
         panel: root.querySelector('.za-panel'),
         toggle: root.querySelector('.za-toggle'),
         status: root.querySelector('[data-role="status"]'),
+        agentConnectionStatus: root.querySelector('[data-role="agentConnectionStatus"]'),
         featurePanel: root.querySelector('[data-role="featurePanel"]'),
         featureButton: root.querySelector('[data-action="toggleFeaturePanel"]'),
         featureBlockList: root.querySelector('[data-role="featureBlockList"]'),
@@ -2930,8 +2952,9 @@
         if (action !== 'stop') this.unlockStatus();
         if (action === 'toggle') this.setPanelOpen(!config.panelOpen);
         if (action === 'refreshFastReplies') FastReplyService.refresh(true);
-        if (action === 'start') Automation.start();
-        if (action === 'stop') Automation.stop('已停止', { manual: true });
+        if (action === 'start') startSelectedMode();
+        if (action === 'stop') stopSelectedMode();
+        if (action === 'checkAgentConnection') checkAgentConnection();
         if (action === 'export') Exporter.exportRecords();
         if (action === 'exportDebugLogs') DebugLogService.exportLogs();
         if (action === 'clearRecordsByTime') RecordCleaner.clearByTime();
@@ -4928,6 +4951,161 @@
       setTimeout(() => alert(`[${APP.name}] ${message}`), 0);
     },
   };
+
+  const StandaloneAutomation = Automation;
+  const ALLOWED_AGENT_TASK_TYPES = new Set(['collect_batch', 'execute_delivery', 'pause']);
+
+  const AgentBridge = {
+    timer: null,
+    inFlight: false,
+
+    isEnabled() {
+      return Boolean(config.agentModeEnabled && config.agentBrowserToken);
+    },
+
+    baseUrl() {
+      const url = new URL(config.agentBaseUrl || 'http://127.0.0.1:8765');
+      if (url.protocol !== 'http:') throw new Error('本地 Agent 仅允许 HTTP 回环地址');
+      if (!['127.0.0.1', 'localhost'].includes(url.hostname) || url.port !== '8765') {
+        throw new Error('本地 Agent 地址必须是 127.0.0.1 或 localhost 的 8765 端口');
+      }
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      return url;
+    },
+
+    headers() {
+      return {
+        'Content-Type': 'application/json',
+        'X-Agent-Token': config.agentBrowserToken,
+      };
+    },
+
+    workerId() {
+      if (config.agentWorkerId) return config.agentWorkerId;
+      const randomPart = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      config = saveConfig({ agentWorkerId: `browser-${randomPart}` });
+      return config.agentWorkerId;
+    },
+
+    request(method, path, body) {
+      const target = new URL(path.replace(/^\/+/, ''), this.baseUrl());
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method,
+          url: target.href,
+          headers: this.headers(),
+          data: body === undefined ? undefined : JSON.stringify(body),
+          timeout: 5000,
+          onload: (response) => resolve(response),
+          onerror: () => reject(new Error('无法连接本地 Agent')),
+          ontimeout: () => reject(new Error('连接本地 Agent 超时')),
+        });
+      });
+    },
+
+    setConnectionStatus(text, type = 'info') {
+      if (runtime.ui && runtime.ui.agentConnectionStatus) {
+        runtime.ui.agentConnectionStatus.textContent = text;
+        runtime.ui.agentConnectionStatus.dataset.type = type;
+      }
+    },
+
+    async heartbeat() {
+      if (!this.isEnabled()) throw new Error('请先启用 Agent 模式并填写浏览器令牌');
+      const response = await this.request('POST', '/api/v1/browser/heartbeat');
+      if (response.status !== 200) throw new Error(`本地 Agent 鉴权失败（${response.status}）`);
+      this.setConnectionStatus('已连接', 'ok');
+      return true;
+    },
+
+    start() {
+      if (!this.isEnabled() || this.timer) return;
+      this.pollOnce();
+      this.timer = setInterval(() => this.pollOnce(), 3000);
+    },
+
+    stop() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      this.inFlight = false;
+      this.setConnectionStatus('已停止', 'info');
+    },
+
+    async reportUnsupportedTask(task) {
+      const workerId = this.workerId();
+      await this.request('POST', `/api/v1/browser/tasks/${encodeURIComponent(task.id)}/result`, {
+        worker_id: workerId,
+        ok: false,
+        error_code: 'unsupported_task_type',
+        error_message: '浏览器拒绝非白名单任务类型',
+      });
+    },
+
+    async pollOnce() {
+      if (!this.isEnabled() || this.inFlight) return;
+      this.inFlight = true;
+      try {
+        const workerId = this.workerId();
+        const response = await this.request(
+          'GET',
+          `/api/v1/browser/tasks/next?worker_id=${encodeURIComponent(workerId)}`,
+        );
+        if (response.status === 204) {
+          this.setConnectionStatus('已连接，等待任务', 'ok');
+          return;
+        }
+        if (response.status !== 200) throw new Error(`任务轮询失败（${response.status}）`);
+        const task = JSON.parse(response.responseText || '{}');
+        if (!ALLOWED_AGENT_TASK_TYPES.has(task.type)) {
+          await this.reportUnsupportedTask(task);
+          return;
+        }
+        this.setConnectionStatus(`已领取任务：${task.type}`, 'info');
+      } catch (error) {
+        this.setConnectionStatus(error.message || String(error), 'warn');
+      } finally {
+        this.inFlight = false;
+      }
+    },
+  };
+
+  function startSelectedMode() {
+    UI.saveFormToConfig();
+    if (!config.agentModeEnabled) {
+      StandaloneAutomation.start();
+      return;
+    }
+    if (!AgentBridge.isEnabled()) {
+      UI.setStatus('请先填写本地 Agent 浏览器令牌', 'warn');
+      return;
+    }
+    AgentBridge.start();
+    UI.setStatus('已启用本地 Agent，等待任务...', 'info');
+  }
+
+  function stopSelectedMode() {
+    if (config.agentModeEnabled) {
+      AgentBridge.stop();
+      UI.setStatus('本地 Agent 已停止', 'info');
+      return;
+    }
+    StandaloneAutomation.stop('已停止', { manual: true });
+  }
+
+  async function checkAgentConnection() {
+    UI.saveFormToConfig();
+    try {
+      await AgentBridge.heartbeat();
+      UI.setStatus('本地 Agent 连接成功', 'ok');
+    } catch (error) {
+      AgentBridge.setConnectionStatus(error.message || String(error), 'warn');
+      UI.setStatus(error.message || String(error), 'warn');
+    }
+  }
 
   // 导出器：JSON/Excel 都在前端生成，下载时强制补扩展名，避免保存成无后缀 blob。
   const Exporter = {
