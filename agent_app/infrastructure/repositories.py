@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from agent_app.domain.enums import BatchStatus
 from agent_app.domain.schemas import BatchCreate
 from agent_app.infrastructure.models import (
+    Analysis,
     AuditEvent,
     Batch,
     BrowserTask,
@@ -208,6 +209,9 @@ class SnapshotRepository:
     def __init__(self, session: Session):
         self.session = session
 
+    def get(self, snapshot_id: str) -> JobSnapshot | None:
+        return self.session.get(JobSnapshot, snapshot_id)
+
     def get_by_identity(self, batch_id: str, identity_key: str) -> JobSnapshot | None:
         return self.session.scalar(
             select(JobSnapshot).where(
@@ -256,3 +260,40 @@ class SnapshotRepository:
             return existing, True
         self.session.refresh(record)
         return record, False
+
+
+class AnalysisRepository:
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_latest(self, snapshot_id: str) -> Analysis | None:
+        return self.session.scalar(
+            select(Analysis)
+            .where(Analysis.job_snapshot_id == snapshot_id)
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .limit(1)
+        )
+
+    def save(
+        self,
+        *,
+        batch_id: str,
+        snapshot_id: str,
+        status: str,
+        payload: dict[str, object],
+    ) -> Analysis:
+        record = self.get_latest(snapshot_id)
+        if record is None:
+            record = Analysis(
+                batch_id=batch_id,
+                job_snapshot_id=snapshot_id,
+                status=status,
+                payload=payload,
+            )
+            self.session.add(record)
+        else:
+            record.status = status
+            record.payload = payload
+        self.session.commit()
+        self.session.refresh(record)
+        return record
