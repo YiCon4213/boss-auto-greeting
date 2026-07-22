@@ -46,7 +46,7 @@
 - Consumes: browser-scoped token and `BrowserTaskCreate(type, payload, idempotency_key)`.
 - Produces: `BrowserTaskService.create/take/ack/progress/resolve`, `/api/v1/browser/*` and `python -m agent_app.cli show-browser-token`.
 
-- [ ] **Step 1: Write failing lease tests**
+- [x] **Step 1: Write failing lease tests**
 
 ```python
 from datetime import timedelta
@@ -72,13 +72,13 @@ def test_duplicate_idempotency_key_returns_existing_task(browser_task_service):
 
 另外在 `tests/unit/test_token_cli.py` 写失败测试：显式 `show-browser-token` 只输出注入的浏览器令牌；未知命令非零退出；输出不得包含应用令牌或模型密钥。
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_browser_task_leases.py tests/unit/test_token_cli.py -v`
 
 Expected: FAIL because `BrowserTaskService` does not exist.
 
-- [ ] **Step 3: Define browser task schemas**
+- [x] **Step 3: Define browser task schemas**
 
 ```python
 from typing import Literal
@@ -109,13 +109,13 @@ class BrowserTaskResult(BaseModel):
     error_message: str = ""
 ```
 
-- [ ] **Step 4: Implement leases and idempotent resolution**
+- [x] **Step 4: Implement leases and idempotent resolution**
 
 迁移 `0002_browser_task_leasing` 只为现有 `browser_tasks` 增加 `leased_by`、`attempt_count`、`progress_sequence`、`acked_at` 和 `resolved_at`；不得重建或改名 Phase 1 表。`take(worker_id)` 使用带状态和租约条件的原子 `UPDATE` 领取最早 pending 或已过期任务，设置 `lease_expires_at = now + 30 seconds` 并增加 `attempt_count`；SQLite 竞争失败时重新查询，不依赖进程内锁。`ack` 只接受当前 worker，`progress` 忽略重复或更小序号，`resolve` 采用“首个终态结果获胜”的幂等规则。
 
 `agent_app.cli` 只支持显式 `show-browser-token` 命令，从同一 `SecretStore` 读取浏览器令牌并输出到当前终端；不得提供 HTTP 令牌读取接口，不得输出应用令牌、模型 API Key 或其它密钥。CLI 测试注入 `FileSecretStore`，不访问系统 keyring。
 
-- [ ] **Step 5: Implement exact browser endpoints**
+- [x] **Step 5: Implement exact browser endpoints**
 
 ```text
 POST /api/v1/browser/heartbeat
@@ -127,7 +127,7 @@ POST /api/v1/browser/tasks/{task_id}/result
 
 Return 204 when no task exists, 404 for unknown tasks, and 409 for wrong worker or invalid terminal state.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
@@ -139,7 +139,7 @@ Run:
 
 Expected: Alembic reports `0002 (head)`；lease expiry、条件领取、worker ownership、progress ordering、token scope、CLI secret isolation 和 idempotent result tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add agent_app alembic/versions/0002_browser_task_leasing.py tests/unit/test_browser_task_leases.py tests/unit/test_token_cli.py tests/api/test_browser_tasks.py
@@ -157,7 +157,7 @@ git commit -m "feat: add leased browser task protocol"
 - Consumes: localStorage config fields `agentModeEnabled`, `agentBaseUrl`, `agentBrowserToken`.
 - Produces: `AgentBridge.isEnabled/start/stop/heartbeat/pollOnce` and visible connection status.
 
-- [ ] **Step 1: Write failing static contract tests**
+- [x] **Step 1: Write failing static contract tests**
 
 ```python
 from pathlib import Path
@@ -182,13 +182,13 @@ def test_browser_bridge_is_local_and_whitelisted():
     assert "eval(" not in source
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/userscript/test_standalone_contract.py tests/userscript/test_agent_bridge_contract.py -v`
 
 Expected: FAIL because Agent configuration and bridge do not exist.
 
-- [ ] **Step 3: Extend config with disabled Agent defaults**
+- [x] **Step 3: Extend config with disabled Agent defaults**
 
 Add exact defaults:
 
@@ -201,7 +201,7 @@ agentWorkerId: '',
 
 Add a small “本地 Agent” section with enable switch, service URL, browser token, connection indicator, and “检查连接”. 浏览器令牌由用户在本机显式运行 `.\.venv\Scripts\python.exe -m agent_app.cli show-browser-token` 后手工填入；不得从网页接口、日志或数据库读取明文。Keep the existing start button mapped to standalone automation when the switch is off.
 
-- [ ] **Step 4: Implement a whitelist-only AgentBridge**
+- [x] **Step 4: Implement a whitelist-only AgentBridge**
 
 ```javascript
 const ALLOWED_AGENT_TASK_TYPES = new Set(['collect_batch', 'execute_delivery', 'pause']);
@@ -232,7 +232,7 @@ const AgentBridge = {
 
 Use `GM_xmlhttpRequest` only for the configured loopback URL after validating hostname is `127.0.0.1` or `localhost` and port is `8765`. Reject every task type outside `ALLOWED_AGENT_TASK_TYPES` and report `unsupported_task_type` without executing it.
 
-- [ ] **Step 5: Route the UI start action by mode**
+- [x] **Step 5: Route the UI start action by mode**
 
 ```javascript
 if (config.agentModeEnabled) {
@@ -245,7 +245,7 @@ if (config.agentModeEnabled) {
 
 Do not change the existing `Automation` implementation in this task; assign `const StandaloneAutomation = Automation` immediately after its definition.
 
-- [ ] **Step 6: Run contracts and JavaScript syntax check**
+- [x] **Step 6: Run contracts and JavaScript syntax check**
 
 Run:
 
@@ -256,11 +256,11 @@ node --check .\zhipin-auto-greeting.user.js
 
 Expected: tests pass and Node exits 0.
 
-- [ ] **Step 7: Perform manual standalone smoke test**
+- [x] **Step 7: Perform manual standalone smoke test**
 
 With Agent mode off, reload the userscript and confirm: existing panel opens, existing config loads, “启动” enters the original list loop, and no request to port 8765 is made.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add zhipin-auto-greeting.user.js tests/userscript
@@ -283,7 +283,7 @@ git commit -m "feat: add optional local agent bridge"
 - Consumes: `JobSnapshotCreate` from the browser.
 - Produces: `make_job_identity_key`, `make_jd_fingerprint`, `POST /api/v1/browser/batches/{id}/snapshots`.
 
-- [ ] **Step 1: Write failing identity tests**
+- [x] **Step 1: Write failing identity tests**
 
 ```python
 def test_identity_prefers_reliable_ids():
@@ -301,13 +301,13 @@ def test_jd_fingerprint_ignores_whitespace():
     assert make_jd_fingerprint("职责一\n\n职责二") == make_jd_fingerprint("职责一 职责二")
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/unit/test_job_identity.py -v`
 
 Expected: FAIL because snapshot utilities do not exist.
 
-- [ ] **Step 3: Implement identity and JD fingerprint helpers**
+- [x] **Step 3: Implement identity and JD fingerprint helpers**
 
 ```python
 from hashlib import sha256
@@ -331,15 +331,15 @@ def make_jd_fingerprint(description: str) -> str:
     return sha256(normalized.encode("utf-8")).hexdigest()
 ```
 
-- [ ] **Step 4: Define `JobSnapshotCreate`**
+- [x] **Step 4: Define `JobSnapshotCreate`**
 
 Include strong IDs, title, company, salary, city, experience, degree, address, description, skills, Boss fields, company fields, source URL, expectation context, and `captured_at`. Reject missing title/company/description. The service computes identity and fingerprint; clients cannot provide trusted values for those fields.
 
-- [ ] **Step 5: Implement idempotent persistence**
+- [x] **Step 5: Implement idempotent persistence**
 
 On `(batch_id, job_identity_key)` conflict, return the existing snapshot ID and update neither the immutable payload nor its fingerprint. Record a duplicate audit event. Reject snapshots when the batch is not `collecting`.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
@@ -349,7 +349,7 @@ Run:
 
 Expected: identity, fingerprint, validation, duplicate, and wrong-batch-state tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add agent_app tests/unit/test_job_identity.py tests/api/test_job_snapshots.py tests/fixtures/job_snapshot.json
@@ -367,7 +367,7 @@ git commit -m "feat: persist immutable job snapshots"
 - Consumes: `collect_batch` task payload `{batch_id, limit, source_url}`.
 - Produces: progress events, snapshot POSTs, and terminal `{collected_count, exhausted}`.
 
-- [ ] **Step 1: Write the failing collector contract**
+- [x] **Step 1: Write the failing collector contract**
 
 ```python
 def test_collector_uses_detail_repository_without_chat_send():
@@ -382,13 +382,13 @@ def test_collector_uses_detail_repository_without_chat_send():
     assert "clickElement(chatButton)" not in collector
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/userscript/test_batch_collector_contract.py -v`
 
 Expected: FAIL because `BatchCollector` and `ApprovedQueueRunner` markers do not exist.
 
-- [ ] **Step 3: Add task dispatch with an empty ApprovedQueueRunner placeholder object**
+- [x] **Step 3: Add task dispatch with an empty ApprovedQueueRunner placeholder object**
 
 ```javascript
 const ApprovedQueueRunner = {
@@ -408,17 +408,17 @@ async function dispatchAgentTask(task) {
 }
 ```
 
-- [ ] **Step 4: Implement collection state isolated from RunState**
+- [x] **Step 4: Implement collection state isolated from RunState**
 
 Store Agent task state under a new key `__zhipin_agent_task_state__`; do not reuse `APP.runKey`. Required fields: `taskId`, `batchId`, `phase`, `processedKeys`, `collectedCount`, `limit`, `sourceUrl`, `expectationContext`, and `updatedAt`.
 
-- [ ] **Step 5: Implement the collection loop**
+- [x] **Step 5: Implement the collection loop**
 
 For each unprocessed visible card: resolve its job through `JobRepository.syncCards`, click the card, wait for `waitForJobCommunicationDetail`, then call `JobRepository.waitForJobDetail(..., {includeHtml: true, forceApiFetch: true})`. Reject if no reliable key exists. Flatten the merged job into the backend schema and POST it. Mark processed only after the backend accepts or reports duplicate.
 
 The loop ends when accepted snapshots reach `limit`, three scroll attempts show no progress, the user pauses, or a security page is detected. It must not call chat-button lookup or send services.
 
-- [ ] **Step 6: Run static contracts and syntax check**
+- [x] **Step 6: Run static contracts and syntax check**
 
 Run:
 
@@ -429,7 +429,7 @@ node --check .\zhipin-auto-greeting.user.js
 
 Expected: all userscript contracts pass and syntax check exits 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add zhipin-auto-greeting.user.js tests/userscript
@@ -449,7 +449,7 @@ git commit -m "feat: collect agent job batches"
 - Consumes: successful `collect_batch` result.
 - Produces: atomic browser-task completion and batch transition to `collected`.
 
-- [ ] **Step 1: Write the failing integration test**
+- [x] **Step 1: Write the failing integration test**
 
 ```python
 def test_collection_result_advances_batch(client, app_headers, browser_headers):
@@ -473,21 +473,21 @@ def test_collection_result_advances_batch(client, app_headers, browser_headers):
     assert current["status"] == "collected"
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/api/test_collection_flow.py -v`
 
 Expected: FAIL because `/collect` or completion coordination is missing.
 
-- [ ] **Step 3: Implement atomic collection completion**
+- [x] **Step 3: Implement atomic collection completion**
 
 `POST /batches/{id}/collect` transitions `draft -> collecting` and creates one idempotent `collect_batch` task. Resolving that task successfully verifies snapshot count, records audit data, and transitions `collecting -> collected` in one SQLAlchemy transaction. Failed or security results transition to `failed` or `paused_security` without deleting snapshots.
 
-- [ ] **Step 4: Add the manual Phase 2 checklist**
+- [x] **Step 4: Add the manual Phase 2 checklist**
 
 Document exact steps: migrate to `0002`, start service on `127.0.0.1:8765`, use the explicit CLI to obtain the browser token, enable Agent mode, load a BOSS list, create a limit-2 batch, verify two cards are selected without opening chat, confirm SQLite contains two snapshots, disable Agent mode, stop the service, and confirm standalone start still works without any request to port 8765.
 
-- [ ] **Step 5: Run Phase 2 verification**
+- [x] **Step 5: Run Phase 2 verification**
 
 Run:
 
@@ -499,7 +499,7 @@ git diff --check
 
 Expected: no failures and syntax check exits 0.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add agent_app tests/api/test_collection_flow.py docs/manual-testing/phase-2-collection.md
@@ -509,3 +509,17 @@ git commit -m "feat: complete browser collection batches"
 ## Phase 2 Exit Gate
 
 Run the manual checklist with a two-job batch in the user's logged-in browser. Evidence must show: no chat navigation, no sent message, two immutable snapshots, correct batch state, and standalone mode still starts with the Agent service stopped. Before the Phase 2 completion commit, update this plan's checkboxes and implementation log, `docs/current-state-analysis.md`, `docs/roadmap.md`, `docs/new-session-handoff.md`, `docs/README.md`, and any affected README instructions; remove only superseded process files under the `AGENTS.md` documentation cleanup rules.
+
+## Implementation Log
+
+- `c72636b`：浏览器任务租约、worker 所有权、进度与幂等终态、浏览器鉴权路由和显式令牌 CLI。
+- `34f90d8`：默认关闭的 Agent 模式、回环地址校验、白名单 `AgentBridge` 和独立模式入口保留。
+- `a571ed1`：服务端强身份键、JD 指纹、不可变快照和重复审计。
+- `e7d5038`：只采集不发送的 `BatchCollector`、独立恢复状态和安全暂停。
+- `098aae5`：幂等 `/collect`、快照计数校验、原子批次终结与人工验证清单。
+- `09a7f90`：修复 Agent 面板被功能区可见性逻辑隐藏的问题，并增加可见性契约。
+- `c54a75f`：修复首次创建浏览器 worker 时意外清空内存配置的问题，并增加 worker 契约。
+- `2556893`：允许已完成批次幂等接收既有快照的终态重复上报，仍拒绝新增身份。
+- 自动化证据：48 项 pytest 通过，`agent_app` 覆盖率 93.12%，Alembic `0002 (head)`，Python `compileall`、Userscript `node --check` 和 `git diff --check` 通过。
+- 非阻塞警告：FastAPI/Starlette `TestClient` 有一条既有第三方弃用警告。
+- 人工门禁：2026-07-22 在用户本人 Chrome 完成两个岗位的只读采集，批次为 `collected`、快照数为 2；用户确认无聊天导航、无沟通点击、无消息发送，也未出现验证码或安全校验。终态重复回放保持快照数、原 payload、JD 指纹和时间戳不变，只追加重复审计。关闭 Agent、停止本地服务并确认 8765 端口释放后，独立模式正常进入原列表循环，并在实际沟通前人工停止。Phase 2 Exit Gate 已通过；Phase 3 未开始。

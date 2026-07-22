@@ -5,7 +5,13 @@ from fastapi import Depends, FastAPI
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app.api.dependencies import require_app_token
-from agent_app.api.routers import batches, profiles, settings as settings_router
+from agent_app.api.routers import (
+    batches,
+    browser,
+    profiles,
+    settings as settings_router,
+    snapshots,
+)
 from agent_app.config import Settings
 from agent_app.infrastructure.database import create_engine_and_session
 from agent_app.infrastructure.secrets import SecretStore, create_secret_store
@@ -48,6 +54,8 @@ def create_app(
         lifespan=lifespan,
     )
     app.include_router(batches.router)
+    app.include_router(browser.router)
+    app.include_router(snapshots.router)
     app.include_router(profiles.router)
     app.include_router(settings_router.router)
 

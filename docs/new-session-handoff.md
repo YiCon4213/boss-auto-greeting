@@ -4,50 +4,35 @@
 
 ## 当前状态
 
-Phase 1“本地服务与数据基础”已经完成并通过退出门禁，下一项工作是 Phase 2“油猴桥接与批次采集”。Phase 1 的实现包括 FastAPI、SQLite/Alembic `0001`、双令牌、画像与模型设置、批次基础 API 和 16 项自动化测试。
+Phase 1 已合入 `main`。Phase 2“油猴桥接与批次采集”已在 `codex/phase-2-browser-bridge-collection` 完成：48 项 pytest 全部通过，`agent_app` 覆盖率 93.12%，Alembic `0002 (head)`、Python 编译、Userscript 语法和差异检查通过。
 
-开始 Phase 2 前应确保 Phase 1 Pull Request 已合并到 GitHub `main`，然后在本地执行：
+2026-07-22 已在用户本人 Chrome 通过 Phase 2 退出门禁：只读采集两个岗位，批次为 `collected` 且快照数为 2；终态重复回放没有新增或改写快照。用户确认未进入聊天、未点击沟通、未发送消息，成功重跑期间也没有验证码或安全校验。关闭 Agent、停止本地服务并确认 8765 端口释放后，油猴独立模式正常进入原列表循环，并在实际沟通前人工停止。
 
-```powershell
-git switch main
-git pull --ff-only origin main
-git switch -c codex/phase-2-browser-bridge-collection
-```
+## 已实现边界
 
-不要直接从 `codex/phase-1-agent-foundation` 创建 Phase 2 分支，否则后续 PR 会形成不必要的堆叠依赖。
+- 浏览器任务只允许 `collect_batch`、`execute_delivery` 和 `pause`，采用短租约、worker 所有权和幂等结果。
+- 浏览器令牌只通过 `python -m agent_app.cli show-browser-token` 在本机终端显式读取，HTTP API 不回显。
+- Agent 模式默认关闭；关闭时继续调用原 `StandaloneAutomation`。
+- `BatchCollector` 只选择岗位卡片和读取详情，不进入聊天、不发送消息。
+- 快照身份键与 JD 指纹由服务端计算；重复任务不覆盖不可变快照，包括批次已完成后的终态重放。
+- 计数不一致不能完成批次；验证码、登录失效和安全校验进入 `paused_security` 并保留已有快照。
+- `ApprovedQueueRunner` 仍为未实现占位，当前代码不能用于 Agent 模式投递。
 
-## 必读顺序
+## 下一步
 
-1. `AGENTS.md`
-2. `docs/README.md`
-3. `docs/current-state-analysis.md`
-4. `docs/product-requirements.md`
-5. `docs/superpowers/specs/2026-07-21-local-resume-delivery-agent-design.md`
-6. `docs/roadmap.md`
-7. `docs/superpowers/plans/2026-07-22-local-resume-delivery-agent.md`
-8. `docs/superpowers/plans/2026-07-22-browser-bridge-collection.md`
+1. 按仓库流程审阅并集成 `codex/phase-2-browser-bridge-collection`，保留用户已有改动和未跟踪 IDE 文件。
+2. 集成后同步本地 `main`，再从 Phase 3 计划第一个未完成复选框开始新分支；不要在 Phase 2 分支直接开始 Phase 3。
+3. Phase 3 继续使用测试驱动方式，实现分析、话术与人工审批工作台；任何发送能力仍必须等待不可变人工批准队列。
 
-然后检查 Git 状态、最近提交、当前分支、Alembic head 和现有未提交改动。
+## 安全边界
 
-## Phase 2 已对齐的前置事实
-
-- 服务地址统一为 `http://127.0.0.1:8765`。
-- Phase 1 已创建 `browser_tasks` 和 `job_snapshots`，Phase 2 通过迁移 `0002_browser_task_leasing` 补字段，不创建重复表。
-- Phase 1 的 `create_app()` 支持注入临时 `session_factory` 和 `SecretStore`，测试应继续使用临时 SQLite 与文件密钥库。
-- 浏览器令牌不得通过 API 返回；Phase 2 计划增加显式本机 CLI，只在用户主动运行时显示浏览器令牌。
-- Agent 模式默认关闭；连接失败不得影响独立模式。
-- Phase 2 只采集详情，不进入聊天、不发送消息；`execute_delivery` 在 Phase 4 前只能返回“尚未实现”。
-
-## 安全与验证边界
-
-- 只处理用户本人已登录后有权查看的职位。
-- 不自动登录、不导出 Cookie、不自动处理验证码，不绕过登录、安全校验、频率限制和访问控制。
-- 后端只下发固定 schema 和白名单任务类型，不下发任意 JavaScript、选择器、SQL 或 URL。
-- 每个任务遵循测试先行，并在提交前检查自动化测试、Userscript 语法、独立模式回归、文档一致性和 Git 状态。
-- Phase 2 退出门禁必须由用户在本人登录环境中完成两岗位采集验证；出现验证码或安全校验时只确认暂停，不尝试处理或绕过。
+- 只处理用户本人登录后有权查看的岗位。
+- 不自动登录，不读取、导出或上传 Cookie、密码和浏览器凭据。
+- 不绕过验证码、登录、安全校验、频率限制或访问控制。
+- 未经后续人工审批不得发送；Phase 2 只提供采集能力。
 
 ## 新会话执行指令
 
 ```text
-请在 D:\Web\boss\boss-auto-greeting 中继续“本地简历投递 Agent”。只修改该子项目。先完整阅读 AGENTS.md、docs/README.md、docs/current-state-analysis.md、产品需求、设计规格、路线图、总计划和 Phase 2 计划；检查 Git 状态并保留已有改动。确认 Phase 1 已在 main 中后，从 Phase 2 第一个未完成复选框开始，使用 superpowers:executing-plans 和测试驱动方式执行。只完成 Phase 2 并通过退出门禁后汇报；保留油猴独立模式，不得绕过人工审批、验证码、登录或安全校验。
+请在 D:\Web\boss\boss-auto-greeting 中继续“本地简历投递 Agent”。只修改该子项目并保留已有改动。先完整阅读 AGENTS.md、docs 索引、当前状态、产品需求、设计规格、路线图、总计划与 Phase 3 计划；确认 Phase 2 已通过退出门禁并集成到 main 后，再从 Phase 3 第一个未完成复选框开始。使用 superpowers:executing-plans 和测试驱动方式；不得绕过人工审批、验证码、登录或安全校验，也不得破坏油猴独立模式。
 ```

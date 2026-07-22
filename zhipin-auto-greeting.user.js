@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         BOSS直聘自动沟通助手
+// @name         BOSS直聘自动沟通助手2
 // @namespace    local.codex.zhipin
 // @version      0.1.8
 // @description  在 BOSS 直聘搜索结果页自动选择岗位、发送常用语或自定义问候语，并记录岗位数据。
@@ -73,6 +73,7 @@
   ];
   const BOSS_ACTIVE_BUILTIN_KEYS = new Set(BOSS_ACTIVE_BUILTIN_OPTIONS.map((item) => normalizeBossActiveText(item)));
   const FEATURE_BLOCK_DEFINITIONS = [
+    { id: 'agent', title: '本地 Agent', defaultEnabled: true },
     { id: 'greeting', title: '打招呼配置', defaultEnabled: true, readonly: true },
     { id: 'strategy', title: '运行策略', defaultEnabled: true, readonly: true },
     { id: 'companyFilter', title: '公司筛选', defaultEnabled: true },
@@ -87,6 +88,11 @@
 
   // 用户可在侧栏面板中修改的配置；保存到 localStorage 后会在下次打开页面时恢复。
   const DEFAULT_CONFIG = {
+    // 本地 Agent 默认关闭；令牌只由用户通过本机 CLI 主动填写。
+    agentModeEnabled: false,
+    agentBaseUrl: 'http://127.0.0.1:8765',
+    agentBrowserToken: '',
+    agentWorkerId: '',
     // 面板和问候语来源。
     panelOpen: true,
     featurePanelOpen: false,
@@ -2577,6 +2583,22 @@
 
           <div class="za-status" data-role="status">等待启动</div>
 
+          <section class="za-section" data-feature-section="agent">
+            <h3>本地 Agent</h3>
+            <label class="za-check"><input data-field="agentModeEnabled" type="checkbox"> 启用 Agent 模式</label>
+            <label>服务地址
+              <input data-field="agentBaseUrl" type="url" autocomplete="off" spellcheck="false">
+            </label>
+            <label>浏览器令牌
+              <input data-field="agentBrowserToken" type="password" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="za-inline">
+              <button type="button" data-action="checkAgentConnection">检查连接</button>
+              <span data-role="agentConnectionStatus">未连接</span>
+            </div>
+            <p class="za-hint">令牌需在本机运行 python -m agent_app.cli show-browser-token 后手工填入。</p>
+          </section>
+
           <section class="za-section" data-feature-section="greeting">
             <h3>打招呼配置</h3>
             <div class="za-radio-row">
@@ -2779,6 +2801,7 @@
         panel: root.querySelector('.za-panel'),
         toggle: root.querySelector('.za-toggle'),
         status: root.querySelector('[data-role="status"]'),
+        agentConnectionStatus: root.querySelector('[data-role="agentConnectionStatus"]'),
         featurePanel: root.querySelector('[data-role="featurePanel"]'),
         featureButton: root.querySelector('[data-action="toggleFeaturePanel"]'),
         featureBlockList: root.querySelector('[data-role="featureBlockList"]'),
@@ -2930,8 +2953,9 @@
         if (action !== 'stop') this.unlockStatus();
         if (action === 'toggle') this.setPanelOpen(!config.panelOpen);
         if (action === 'refreshFastReplies') FastReplyService.refresh(true);
-        if (action === 'start') Automation.start();
-        if (action === 'stop') Automation.stop('已停止', { manual: true });
+        if (action === 'start') startSelectedMode();
+        if (action === 'stop') stopSelectedMode();
+        if (action === 'checkAgentConnection') checkAgentConnection();
         if (action === 'export') Exporter.exportRecords();
         if (action === 'exportDebugLogs') DebugLogService.exportLogs();
         if (action === 'clearRecordsByTime') RecordCleaner.clearByTime();
@@ -4928,6 +4952,418 @@
       setTimeout(() => alert(`[${APP.name}] ${message}`), 0);
     },
   };
+
+  const StandaloneAutomation = Automation;
+  const ALLOWED_AGENT_TASK_TYPES = new Set(['collect_batch', 'execute_delivery', 'pause']);
+
+  const AgentBridge = {
+    timer: null,
+    inFlight: false,
+
+    isEnabled() {
+      return Boolean(config.agentModeEnabled && config.agentBrowserToken);
+    },
+
+    baseUrl() {
+      const url = new URL(config.agentBaseUrl || 'http://127.0.0.1:8765');
+      if (url.protocol !== 'http:') throw new Error('本地 Agent 仅允许 HTTP 回环地址');
+      if (!['127.0.0.1', 'localhost'].includes(url.hostname) || url.port !== '8765') {
+        throw new Error('本地 Agent 地址必须是 127.0.0.1 或 localhost 的 8765 端口');
+      }
+      url.pathname = '/';
+      url.search = '';
+      url.hash = '';
+      return url;
+    },
+
+    headers() {
+      return {
+        'Content-Type': 'application/json',
+        'X-Agent-Token': config.agentBrowserToken,
+      };
+    },
+
+    workerId() {
+      if (config.agentWorkerId) return config.agentWorkerId;
+      const randomPart = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const workerId = `browser-${randomPart}`;
+      saveConfig({ agentWorkerId: workerId });
+      return workerId;
+    },
+
+    request(method, path, body) {
+      const target = new URL(path.replace(/^\/+/, ''), this.baseUrl());
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method,
+          url: target.href,
+          headers: this.headers(),
+          data: body === undefined ? undefined : JSON.stringify(body),
+          timeout: 5000,
+          onload: (response) => resolve(response),
+          onerror: () => reject(new Error('无法连接本地 Agent')),
+          ontimeout: () => reject(new Error('连接本地 Agent 超时')),
+        });
+      });
+    },
+
+    setConnectionStatus(text, type = 'info') {
+      if (runtime.ui && runtime.ui.agentConnectionStatus) {
+        runtime.ui.agentConnectionStatus.textContent = text;
+        runtime.ui.agentConnectionStatus.dataset.type = type;
+      }
+    },
+
+    async heartbeat() {
+      if (!this.isEnabled()) throw new Error('请先启用 Agent 模式并填写浏览器令牌');
+      const response = await this.request('POST', '/api/v1/browser/heartbeat');
+      if (response.status !== 200) throw new Error(`本地 Agent 鉴权失败（${response.status}）`);
+      this.setConnectionStatus('已连接', 'ok');
+      return true;
+    },
+
+    start() {
+      if (!this.isEnabled() || this.timer) return;
+      this.pollOnce();
+      this.timer = setInterval(() => this.pollOnce(), 3000);
+    },
+
+    stop() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      this.inFlight = false;
+      this.setConnectionStatus('已停止', 'info');
+    },
+
+    async reportUnsupportedTask(task) {
+      const workerId = this.workerId();
+      await this.request('POST', `/api/v1/browser/tasks/${encodeURIComponent(task.id)}/result`, {
+        worker_id: workerId,
+        ok: false,
+        error_code: 'unsupported_task_type',
+        error_message: '浏览器拒绝非白名单任务类型',
+      });
+    },
+
+    async ackTask(task) {
+      const response = await this.request(
+        'POST',
+        `/api/v1/browser/tasks/${encodeURIComponent(task.id)}/ack`,
+        { worker_id: this.workerId() },
+      );
+      if (response.status !== 200) throw new Error(`任务确认失败（${response.status}）`);
+    },
+
+    async reportProgress(task, sequence, status, detail) {
+      const response = await this.request(
+        'POST',
+        `/api/v1/browser/tasks/${encodeURIComponent(task.id)}/progress`,
+        { worker_id: this.workerId(), sequence, status, detail: detail || {} },
+      );
+      if (response.status !== 200) throw new Error(`任务进度回报失败（${response.status}）`);
+    },
+
+    async resolveTask(task, result) {
+      const response = await this.request(
+        'POST',
+        `/api/v1/browser/tasks/${encodeURIComponent(task.id)}/result`,
+        Object.assign({ worker_id: this.workerId() }, result),
+      );
+      if (response.status !== 200) throw new Error(`任务结果回报失败（${response.status}）`);
+    },
+
+    async pollOnce() {
+      if (!this.isEnabled() || this.inFlight) return;
+      this.inFlight = true;
+      try {
+        const workerId = this.workerId();
+        const response = await this.request(
+          'GET',
+          `/api/v1/browser/tasks/next?worker_id=${encodeURIComponent(workerId)}`,
+        );
+        if (response.status === 204) {
+          this.setConnectionStatus('已连接，等待任务', 'ok');
+          return;
+        }
+        if (response.status !== 200) throw new Error(`任务轮询失败（${response.status}）`);
+        const task = JSON.parse(response.responseText || '{}');
+        if (!ALLOWED_AGENT_TASK_TYPES.has(task.type)) {
+          await this.reportUnsupportedTask(task);
+          return;
+        }
+        this.setConnectionStatus(`已领取任务：${task.type}`, 'info');
+        await this.ackTask(task);
+        try {
+          const result = await dispatchAgentTask(task);
+          await this.resolveTask(task, { ok: true, result: result || {} });
+          this.setConnectionStatus(`任务完成：${task.type}`, 'ok');
+        } catch (taskError) {
+          const security = Boolean(taskError && taskError.agentSecurity);
+          await this.resolveTask(task, {
+            ok: false,
+            result: {},
+            error_code: security ? 'paused_security' : 'task_failed',
+            error_message: taskError && taskError.message || String(taskError),
+          });
+          if (security) this.stop();
+        }
+      } catch (error) {
+        this.setConnectionStatus(error.message || String(error), 'warn');
+      } finally {
+        this.inFlight = false;
+      }
+    },
+  };
+
+  const AgentTaskState = {
+    key: '__zhipin_agent_task_state__',
+
+    load() {
+      try {
+        const value = JSON.parse(localStorage.getItem(this.key) || 'null');
+        return value && typeof value === 'object' ? value : null;
+      } catch (error) {
+        return null;
+      }
+    },
+
+    save(next) {
+      const value = Object.assign({}, next || {}, { updatedAt: nowIso() });
+      localStorage.setItem(this.key, JSON.stringify(value));
+      return value;
+    },
+
+    begin(task) {
+      const existing = this.load();
+      if (existing && existing.taskId === task.id) return existing;
+      const payload = task.payload || {};
+      return this.save({
+        taskId: task.id,
+        batchId: String(payload.batch_id || ''),
+        phase: 'collecting',
+        processedKeys: [],
+        collectedCount: 0,
+        limit: Math.max(1, Number(payload.limit || 10)),
+        sourceUrl: validateAgentSourceUrl(payload.source_url || location.href),
+        expectationContext: payload.expectation_context || {},
+      });
+    },
+  };
+
+  function validateAgentSourceUrl(value) {
+    const url = new URL(String(value || ''));
+    if (url.protocol !== 'https:' || url.hostname !== 'www.zhipin.com' || url.pathname !== '/web/geek/jobs') {
+      throw new Error('采集任务来源不是允许的 BOSS 岗位列表');
+    }
+    return url.href;
+  }
+
+  function detectAgentSecurityBlock() {
+    const route = `${location.pathname}${location.search}`;
+    if (/captcha|verify|security-check|login/i.test(route)) return true;
+    const visibleText = normalizeText(document.body && document.body.innerText || '').slice(0, 2500);
+    return /验证码|安全验证|登录后继续|请先登录|访问受限/.test(visibleText);
+  }
+
+  function flattenAgentSnapshot(job, state) {
+    const description = normalizeTextPreserveLines(job && job.postDescription);
+    if (!job || !normalizeText(job.jobName) || !normalizeText(job.company) || !description) {
+      throw new Error('岗位快照缺少标题、公司或完整 JD');
+    }
+    return {
+      encrypt_job_id: normalizeText(job.encryptJobId),
+      security_id: normalizeText(job.securityId),
+      lid: normalizeText(job.lid),
+      title: normalizeText(job.jobName),
+      company: normalizeText(job.company),
+      salary: normalizeText(getDisplaySalary(job)),
+      city: normalizeText(job.city),
+      experience: normalizeText(job.experience),
+      degree: normalizeText(job.degree),
+      address: normalizeText(job.workAddress || job.address),
+      description,
+      skills: normalizeStringArray(job.showSkills),
+      boss_name: normalizeText(job.bossName),
+      boss_title: normalizeText(job.bossTitle),
+      boss_active: normalizeText(getDisplayBossActiveTime(job)),
+      company_industry: normalizeText(job.companyIndustry),
+      company_size: normalizeText(job.companyScale),
+      company_stage: normalizeText(job.companyStage),
+      company_description: normalizeTextPreserveLines(job.companyIntroduce),
+      source_url: state.sourceUrl,
+      expectation_context: state.expectationContext || {},
+      captured_at: nowIso(),
+    };
+  }
+
+  const BatchCollector = {
+    paused: false,
+
+    async postSnapshot(state, job) {
+      const response = await AgentBridge.request(
+        'POST',
+        `/api/v1/browser/batches/${encodeURIComponent(state.batchId)}/snapshots`,
+        flattenAgentSnapshot(job, state),
+      );
+      if (response.status !== 200) {
+        throw new Error(`保存岗位快照失败（${response.status}）`);
+      }
+      const body = JSON.parse(response.responseText || '{}');
+      return { accepted: true, duplicate: Boolean(body.duplicate), snapshotId: body.id || '' };
+    },
+
+    async scrollForMore() {
+      const cards = JobRepository.syncCards();
+      const anchor = cards[cards.length - 1];
+      const scroller = findScrollParent(anchor) || document.scrollingElement || document.documentElement;
+      if (!scroller) return false;
+      const beforeSignature = getVisibleJobListRenderSignature();
+      const beforeSerial = Number(runtime.jobListResponseSerial || 0);
+      const beforeTop = Number(scroller.scrollTop || 0);
+      scroller.scrollTop = beforeTop + Math.max(400, Number(scroller.clientHeight || 600) * 0.8);
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await waitForJobListRenderChange(beforeSignature, beforeSerial, 800);
+      await sleep(120);
+      return getVisibleJobListRenderSignature() !== beforeSignature || Number(scroller.scrollTop || 0) > beforeTop;
+    },
+
+    async run(task) {
+      this.paused = false;
+      let state = AgentTaskState.begin(task);
+      let noProgressScrolls = 0;
+      let exhausted = false;
+      UI.setStatus(`Agent 正在采集岗位 0/${state.limit}`, 'info');
+
+      while (!this.paused && state.collectedCount < state.limit) {
+        if (detectAgentSecurityBlock()) {
+          state = AgentTaskState.save(Object.assign({}, state, { phase: 'paused_security' }));
+          const error = new Error('检测到验证码、登录失效或安全校验，采集已暂停');
+          error.agentSecurity = true;
+          throw error;
+        }
+
+        const processedKeys = new Set(Array.isArray(state.processedKeys) ? state.processedKeys : []);
+        const entries = JobRepository.syncCards().map((card, index) => getCardScanEntry(card, index));
+        let acceptedThisPass = 0;
+
+        for (const entry of entries) {
+          if (this.paused || state.collectedCount >= state.limit) break;
+          if (!entry.key || processedKeys.has(entry.key)) continue;
+          if (detectAgentSecurityBlock()) break;
+
+          entry.card.scrollIntoView({ block: 'center', inline: 'nearest' });
+          const detailStartedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+          clickElement(entry.card);
+          const communicationDetail = await waitForJobCommunicationDetail(
+            entry.job,
+            Math.max(3000, getWaitTimeout() * 1000),
+          );
+          let job = mergeJobInfo(entry.job, communicationDetail && communicationDetail.detail);
+          const fullDetail = await JobRepository.waitForJobDetail(
+            job,
+            Math.max(4500, getWaitTimeout() * 1000),
+            detailStartedAt,
+            { includeHtml: true, forceApiFetch: true },
+          );
+          if (fullDetail) job = mergeJobInfo(job, fullDetail);
+          if (!getReliableJobIdentityKeys(job).length) {
+            throw new Error('岗位缺少可靠强 ID，不能作为可投递快照');
+          }
+
+          const outcome = await this.postSnapshot(state, job);
+          if (outcome.accepted || outcome.duplicate) {
+            processedKeys.add(entry.key);
+            state = AgentTaskState.save(Object.assign({}, state, {
+              processedKeys: Array.from(processedKeys),
+              collectedCount: Number(state.collectedCount || 0) + 1,
+              phase: 'collecting',
+            }));
+            acceptedThisPass += 1;
+            await AgentBridge.reportProgress(task, state.collectedCount, 'snapshot_saved', {
+              collected_count: state.collectedCount,
+              limit: state.limit,
+            });
+            UI.setStatus(`Agent 正在采集岗位 ${state.collectedCount}/${state.limit}`, 'info');
+          }
+        }
+
+        if (state.collectedCount >= state.limit) break;
+        const progressed = acceptedThisPass > 0 || await this.scrollForMore();
+        noProgressScrolls = progressed ? 0 : noProgressScrolls + 1;
+        if (noProgressScrolls >= 3) {
+          exhausted = true;
+          break;
+        }
+      }
+
+      if (this.paused) {
+        AgentTaskState.save(Object.assign({}, state, { phase: 'paused' }));
+        return { collected_count: state.collectedCount, exhausted: false, paused: true };
+      }
+      AgentTaskState.save(Object.assign({}, state, { phase: 'completed' }));
+      UI.setStatus(`Agent 采集完成：${state.collectedCount} 个岗位，等待人工审批`, 'ok');
+      return { collected_count: state.collectedCount, exhausted };
+    },
+
+    pause() {
+      this.paused = true;
+      const state = AgentTaskState.load();
+      if (state) AgentTaskState.save(Object.assign({}, state, { phase: 'paused' }));
+      return { paused: true };
+    },
+  };
+
+  const ApprovedQueueRunner = {
+    async run() {
+      throw new Error('发送队列尚未实现');
+    },
+  };
+
+  async function dispatchAgentTask(task) {
+    if (!ALLOWED_AGENT_TASK_TYPES.has(task.type)) {
+      throw new Error(`不支持的 Agent 任务：${task.type}`);
+    }
+    if (task.type === 'collect_batch') return BatchCollector.run(task);
+    if (task.type === 'execute_delivery') return ApprovedQueueRunner.run(task);
+    if (task.type === 'pause') return BatchCollector.pause(task);
+    throw new Error(`未实现的 Agent 任务：${task.type}`);
+  }
+
+  function startSelectedMode() {
+    UI.saveFormToConfig();
+    if (!config.agentModeEnabled) {
+      StandaloneAutomation.start();
+      return;
+    }
+    if (!AgentBridge.isEnabled()) {
+      UI.setStatus('请先填写本地 Agent 浏览器令牌', 'warn');
+      return;
+    }
+    AgentBridge.start();
+    UI.setStatus('已启用本地 Agent，等待任务...', 'info');
+  }
+
+  function stopSelectedMode() {
+    if (config.agentModeEnabled) {
+      AgentBridge.stop();
+      UI.setStatus('本地 Agent 已停止', 'info');
+      return;
+    }
+    StandaloneAutomation.stop('已停止', { manual: true });
+  }
+
+  async function checkAgentConnection() {
+    UI.saveFormToConfig();
+    try {
+      await AgentBridge.heartbeat();
+      UI.setStatus('本地 Agent 连接成功', 'ok');
+    } catch (error) {
+      AgentBridge.setConnectionStatus(error.message || String(error), 'warn');
+      UI.setStatus(error.message || String(error), 'warn');
+    }
+  }
 
   // 导出器：JSON/Excel 都在前端生成，下载时强制补扩展名，避免保存成无后缀 blob。
   const Exporter = {
