@@ -1,7 +1,9 @@
 import hmac
+from collections.abc import Iterator
 from typing import Annotated
 
 from fastapi import Header, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
 
 def _require_token(request: Request, provided: str | None, state_name: str) -> None:
@@ -29,3 +31,9 @@ def require_browser_token(
     x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
 ) -> None:
     _require_token(request, x_agent_token, "browser_token")
+
+
+def get_session(request: Request) -> Iterator[Session]:
+    session_factory = request.app.state.session_factory
+    with session_factory() as session:
+        yield session
